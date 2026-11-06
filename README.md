@@ -126,7 +126,56 @@ When errors appear, attribution follows a fixed order: DMA → preload/writeback
 
 ## Build & quick start
 
-> TBD: the implementation is not ready yet.
+### Prerequisites
+
+- CMake ≥ 3.25
+- Ninja
+- LLVM/MLIR built from source (with `clang` and `mlir-tblgen` available)
+
+Set the environment variable if your LLVM build is not in a standard location:
+
+```bash
+export LLVM_BUILD_DIR=/path/to/llvm-project/build
+```
+
+Standard locations searched automatically: `../llvm-project/build`, `../../llvm-project/build`, `../llvm/build`, `../../llvm/build`.
+
+### Build
+
+```bash
+# Release build (default preset)
+cmake --preset default
+cmake --build --preset default
+
+# Debug build
+cmake --preset debug
+cmake --build --preset debug
+```
+
+### Quick start
+
+Verify a hardware configuration file:
+
+```bash
+./build/tools/perf/perf --target=test/fixtures/target.mlir
+# OK: test/fixtures/target.mlir
+```
+
+Verify a Perf dialect program:
+
+```bash
+./build/tools/perf/perf --input=test/fixtures/simple.mlir
+# OK: test/fixtures/simple.mlir
+```
+
+### VS Code integration
+
+`compile_commands.json` is generated in the build directory and symlinked to the repo root, so clangd works out of the box.
+
+```bash
+# After first build, the symlink is created automatically:
+ln -sf build/compile_commands.json compile_commands.json
+```
 
 ## Docs
 
