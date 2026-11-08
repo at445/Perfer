@@ -7,7 +7,9 @@
 #ifndef PERF_DIALECT_PERFDIALECT_H
 #define PERF_DIALECT_PERFDIALECT_H
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Dialect.h"
+#include "mlir/IR/OpDefinition.h"
 
 #include "perf/Dialect/PerfOpsDialect.h.inc"
 

@@ -9,7 +9,9 @@ llvm_update_compile_flags(perf)
 
 target_link_libraries(perf PRIVATE
   MLIRPerfDialect
+  MLIRPerfSim
   MLIRParser
+  MLIRFuncDialect
   MLIRSupport
   MLIRIR
 )

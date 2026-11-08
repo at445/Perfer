@@ -1,4 +1,4 @@
-module attributes {perf.target = #perf.target<
+perf.target_def @systolic_npu_v1 #perf.target<
   version = 3,
   target_name = "systolic_npu_v1",
   frequency_mhz = 1000,
@@ -37,4 +37,4 @@ module attributes {perf.target = #perf.target<
     extra_preload_cycles = 0, extra_writeback_cycles = 0,
     host_issue_cycles = 0
   >
->} {}
+>

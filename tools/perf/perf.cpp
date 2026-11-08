@@ -1,8 +1,11 @@
-// perf - parse, verify, and print MLIR (mlir-opt style).
+// perf - parse, verify, and simulate perf IR against a target config.
 
 #include "perf/Dialect/PerfAttrs.h"
 #include "perf/Dialect/PerfDialect.h"
+#include "perf/Dialect/PerfOps.h"
+#include "perf/Sim/TargetModel.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -23,46 +26,84 @@ using namespace mlir;
 
 static llvm::cl::opt<std::string> inputFilename(
     "input", llvm::cl::desc("Input MLIR program file"),
-    llvm::cl::value_desc("program.mlir"));
+    llvm::cl::value_desc("program.mlir"), llvm::cl::Required);
 
 static llvm::cl::opt<std::string> targetFilename(
     "target", llvm::cl::desc("Target config MLIR file"),
-    llvm::cl::value_desc("target.mlir"));
+    llvm::cl::value_desc("target.mlir"), llvm::cl::Required);
 
 static llvm::cl::opt<std::string> outputFilename(
     "o", llvm::cl::desc("Output filename ('-' for stdout)"),
     llvm::cl::value_desc("filename"), llvm::cl::init("-"));
 
 //===----------------------------------------------------------------------===//
-// Shared pipeline: parse + verify
+// Parse helpers
 //===----------------------------------------------------------------------===//
 
-static int runPipeline(StringRef filename, MLIRContext &context) {
+static OwningOpRef<ModuleOp> parseModuleFile(StringRef filename,
+                                             MLIRContext &context) {
   std::string errorMessage;
   auto input = openInputFile(filename, &errorMessage);
   if (!input) {
     llvm::errs() << errorMessage << "\n";
-    return 1;
+    return nullptr;
   }
 
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(std::move(input), llvm::SMLoc());
-  SourceMgrDiagnosticHandler sourceMgrHandler(sourceMgr, &context);
+  SourceMgrDiagnosticHandler handler(sourceMgr, &context);
 
   auto mod = parseSourceFile<ModuleOp>(sourceMgr, &context);
   if (!mod) {
     llvm::errs() << "error: failed to parse " << filename << "\n";
-    return 1;
+    return nullptr;
   }
 
   if (failed(verify(mod.get()))) {
     llvm::errs() << "error: verification failed for " << filename << "\n";
-    return 1;
+    return nullptr;
   }
 
-  llvm::outs() << "OK: " << filename << "\n";
-  return 0;
+  return mod;
 }
+
+//===----------------------------------------------------------------------===//
+// Target loading
+//===----------------------------------------------------------------------===//
+
+static llvm::FailureOr<perf::TargetModel> loadTarget(StringRef filename,
+                                                      MLIRContext &context) {
+  auto mod = parseModuleFile(filename, context);
+  if (!mod)
+    return failure();
+
+  // Expect a single perf.target_def op at top level.
+  perf::TargetDefOp targetDef;
+  for (auto &op : mod->getBody()->getOperations()) {
+    if (auto td = dyn_cast<perf::TargetDefOp>(&op)) {
+      if (targetDef) {
+        llvm::errs() << "error: multiple perf.target_def ops in " << filename << "\n";
+        return failure();
+      }
+      targetDef = td;
+    }
+  }
+  if (!targetDef) {
+    llvm::errs() << "error: no perf.target_def found in " << filename << "\n";
+    return failure();
+  }
+
+  auto modelOr = perf::TargetModel::build(targetDef.getConfig());
+  if (failed(modelOr)) {
+    llvm::errs() << "error: failed to build TargetModel from " << filename << "\n";
+    return failure();
+  }
+  return modelOr;
+}
+
+//===----------------------------------------------------------------------===//
+// Main pipeline
+//===----------------------------------------------------------------------===//
 
 int main(int argc, char **argv) {
   llvm::InitLLVM y(argc, argv);
@@ -70,19 +111,23 @@ int main(int argc, char **argv) {
 
   DialectRegistry registry;
   registry.insert<perf::PerfDialect>();
+  registry.insert<func::FuncDialect>();
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  if (!inputFilename.empty() && !targetFilename.empty()) {
-    llvm::errs() << "error: --input and --target are mutually exclusive\n";
+  // Load target config
+  auto targetOr = loadTarget(targetFilename, context);
+  if (failed(targetOr))
     return 1;
-  }
+  auto target = std::move(*targetOr);
 
-  if (!inputFilename.empty())
-    return runPipeline(inputFilename, context);
-  if (!targetFilename.empty())
-    return runPipeline(targetFilename, context);
+  llvm::outs() << "Loaded target: " << target.getAttr().getTargetName() << "\n";
 
-  llvm::errs() << "error: either --input or --target is required\n";
-  return 1;
+  // Parse program
+  auto mod = parseModuleFile(inputFilename, context);
+  if (!mod)
+    return 1;
+
+  llvm::outs() << "OK: " << inputFilename << " against " << targetFilename << "\n";
+  return 0;
 }

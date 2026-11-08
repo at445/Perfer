@@ -2,6 +2,7 @@
 
 #include "perf/Dialect/PerfDialect.h"
 #include "perf/Dialect/PerfAttrs.h"
+#include "perf/Dialect/PerfOps.h"
 
 #include "mlir/IR/OpImplementation.h"
 
@@ -14,4 +15,10 @@ using namespace perf;
 // are only visible there.
 void PerfDialect::initialize() {
   registerAttributes();
+  registerTypes();
+
+  addOperations<
+#define GET_OP_LIST
+#include "perf/Dialect/PerfOps.cpp.inc"
+      >();
 }
