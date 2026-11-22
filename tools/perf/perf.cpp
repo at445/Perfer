@@ -2,6 +2,7 @@
 
 #include "perf/Analysis/ReachabilityVerifier.h"
 #include "perf/Analysis/ScheduleLegalityVerifier.h"
+#include "perf/Analysis/WriteConflictVerifier.h"
 #include "perf/Dialect/PerfAttrs.h"
 #include "perf/Dialect/PerfDialect.h"
 #include "perf/Dialect/PerfOps.h"
@@ -200,6 +201,11 @@ int main(int argc, char **argv) {
   // R3 schedule legality: per-resource total order must be a linear
   // extension of the token partial order.
   if (failed(perf::verifyScheduleLegality(*mod)))
+    return 1;
+
+  // R4 write conflicts: conflicting accesses with at least one write must
+  // be ordered by the token partial order.
+  if (failed(perf::verifyWriteConflict(*mod)))
     return 1;
 
   llvm::outs() << "OK: " << inputFilename << " against " << targetFilename << "\n";
