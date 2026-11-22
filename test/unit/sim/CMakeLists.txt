@@ -8,3 +8,5 @@ target_link_libraries(TargetModelTest PRIVATE
   MLIRParser
   MLIRIR
 )
+
+add_subdirectory(index)
