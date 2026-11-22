@@ -1,22 +1,8 @@
-// Shared DMA channel parameters; referenced by both DMA families so the
-// read/write channels stay consistent by construction.
-#dma_channel = #perf.dma<
-  bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
-  max_outstanding = 8, burst_bytes = 64
->
-
-// Systolic array microarchitecture.
-#systolic_array = #perf.array<
-  topology = "systolic",
-  mesh_rows = 16, mesh_cols = 16,
-  tile_rows = 1, tile_cols = 1,
-  pe_latency_cycles = 1,
-  input_skew = true,
-  inter_tile_pipelined = true
->
-
-perf.target_def @systolic_npu_v1 #perf.target<
-  version = 4,
+// Design point in the DSE engineer's vocabulary: physical structure
+// parameters. The compiler-simulator contract (executor instances, links)
+// is projected from this; see `perf --dump-contract`.
+perf.target_def @systolic_npu_v1 #perf.design<
+  version = 5,
   target_name = "systolic_npu_v1",
   frequency_mhz = 1000,
   memory_spaces = [
@@ -33,26 +19,20 @@ perf.target_def @systolic_npu_v1 #perf.target<
       port_width_bytes = 64, row_width_bytes = 64
     >
   ],
-  executors = [
-    #perf.executor_family<
-      kind = "dma_read", count = 1, in_order = true,
-      spaces = ["spad", "acc"], config = #dma_channel
-    >,
-    #perf.executor_family<
-      kind = "dma_write", count = 1, in_order = true,
-      spaces = ["spad", "acc"], config = #dma_channel
-    >,
-    #perf.executor_family<
-      kind = "array", count = 1, in_order = true,
-      spaces = ["spad", "acc"], config = #systolic_array
-    >
-  ],
-  links = [
-    #perf.link<kind = "dram_bus", count = 1>
-  ],
-  calibration = #perf.calibration<
-    extra_fill_cycles = 0, extra_drain_cycles = 0,
-    extra_preload_cycles = 0, extra_writeback_cycles = 0,
-    host_issue_cycles = 0
-  >
+  dma_read_ports = 1,
+  dma_write_ports = 1,
+  arrays = 1,
+  dma_channel = #perf.dma<
+    bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
+    max_outstanding = 8, burst_bytes = 64
+  >,
+  array_uarch = #perf.array<
+    topology = "systolic",
+    mesh_rows = 16, mesh_cols = 16,
+    tile_rows = 1, tile_cols = 1,
+    pe_latency_cycles = 1,
+    input_skew = true,
+    inter_tile_pipelined = true
+  >,
+  share_dram_bus = true
 >

@@ -65,26 +65,22 @@ Two caveats:
 
 ## Config and IR example
 
-The config describes what the machine has, how fast, and how large:
+The config is written in the DSE engineer's vocabulary—physical structure parameters such as port counts, memory geometry, and subsystem microarchitecture—while simulation priors (calibration state) live in a separate file shared unchanged across design points. The compiler–simulator contract (executor instances, internal links) is projected from these parameters rather than written by hand; `perf --dump-contract` prints it for inspection. See `test/fixtures/target.mlir` and `test/fixtures/prior.mlir` for complete examples.
 
 ```mlir
-#target = #perf.target<
-  version = 4,                      // config schema version
+// a minimal design point
+perf.target_def @systolic_npu_v1 #perf.design<
+  version = 5,
   target_name = "systolic_npu_v1",
   frequency_mhz = 1000,
-  memory_spaces = [                 // named storage: capacity, banking, ports, row width
+  memory_spaces = [
     #perf.memspace<name = "spad", capacity_kib = 256, banks = 4, ...>,
     #perf.memspace<name = "acc",  capacity_kib = 64,  banks = 4, ...>
   ],
-  executors = [                     // executor resources referenced by IR placement
-    #perf.executor_family<kind = "dma_read", count = 1, in_order = true,
-                          spaces = ["spad", "acc"], config = #perf.dma<...>>,
-    #perf.executor_family<kind = "array",    count = 1, in_order = true,
-                          spaces = ["spad", "acc"], config = #perf.array<...>>
-  ],
-  links = [                         // internal contention channels (cost-model only)
-    #perf.link<kind = "dram_bus", count = 1>
-  ]
+  dma_read_ports = 1, dma_write_ports = 1, arrays = 1,
+  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, ...>,
+  array_uarch = #perf.array<mesh_rows = 16, mesh_cols = 16, ...>,
+  share_dram_bus = true
 >
 ```
 
@@ -163,18 +159,22 @@ cmake --build --preset debug
 
 ### Quick start
 
-Verify a hardware configuration file:
+Inspect the projected compiler–simulator contract for a design point:
 
 ```bash
-./build/tools/perf/perf --target=test/fixtures/target.mlir
-# OK: test/fixtures/target.mlir
+./build/tools/perf/perf --input=test/fixtures/input.mlir \
+  --target=test/fixtures/target.mlir --prior=test/fixtures/prior.mlir \
+  --dump-contract
+# module { perf.contract_def @systolic_npu_v1 ... }
 ```
 
-Verify a Perf dialect program:
+Verify a Perf dialect program against a design point and priors:
 
 ```bash
-./build/tools/perf/perf --input=test/fixtures/simple.mlir
-# OK: test/fixtures/simple.mlir
+./build/tools/perf/perf --input=test/fixtures/input.mlir \
+  --target=test/fixtures/target.mlir --prior=test/fixtures/prior.mlir
+# Loaded design: systolic_npu_v1 with prior: systolic_npu_base
+# OK: test/fixtures/input.mlir against test/fixtures/target.mlir
 ```
 
 ### VS Code integration

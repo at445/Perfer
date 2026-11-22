@@ -60,7 +60,7 @@ LogicalResult verifyOp(Operation *op) {
 llvm::LogicalResult verifyReachability(ModuleOp module) {
   bool failed = false;
   module.walk([&](Operation *op) {
-    if (isa<DmaLoadOp, DmaStoreOp, PreloadOp, ComputeOp>(op)) {
+    if (isa<DmaLoadOp, DmaStoreOp, ArrayInitOp, ComputeOp>(op)) {
       if (::mlir::failed(verifyOp(op)))
         failed = true;
     }
