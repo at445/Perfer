@@ -162,6 +162,19 @@ cmake --preset debug
 cmake --build --preset debug
 ```
 
+### Test
+
+```bash
+# Everything: unit tests + acceptance (fixture) tests
+ctest --preset default
+
+# Only the standalone C++ component tests
+ctest --preset unit
+
+# Only the end-to-end fixture tests (verifier rules, contract projection)
+ctest --preset acceptance
+```
+
 ### Quick start
 
 Inspect the projected compiler–simulator contract for a design point:

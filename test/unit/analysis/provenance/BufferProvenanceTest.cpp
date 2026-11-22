@@ -54,7 +54,7 @@ TEST_F(BufferProvenanceTest, AllocIsItsOwnRoot) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
+    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
     return
   }
 }
@@ -126,8 +126,8 @@ TEST_F(BufferProvenanceTest, DistinctAllocRootsDoNotConflict) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %a = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
-    %b = perf.alloc : memref<512xi8, #perf.space<"spad", 1>>
+    %a = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
+    %b = perf.alloc : memref<512xi8, #perf.space<"spad", 32, 32>>
     return
   }
 }
@@ -148,7 +148,7 @@ TEST_F(BufferProvenanceTest, SameRootFullRangeConflicts) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %a = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
+    %a = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
     return
   }
 }
@@ -171,9 +171,9 @@ TEST_F(BufferProvenanceTest, SubviewTracksOffsetAndSize) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
+    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
     %sub = memref.subview %buf[256] [256] [1]
-           : memref<512xi8, #perf.space<"spad", 0>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0>>
+           : memref<512xi8, #perf.space<"spad", 0, 32>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0, 32>>
     return
   }
 }
@@ -200,11 +200,11 @@ TEST_F(BufferProvenanceTest, DisjointSubviewsDoNotConflict) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
+    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
     %s0 = memref.subview %buf[0] [256] [1]
-          : memref<512xi8, #perf.space<"spad", 0>> to memref<256xi8, strided<[1], offset: 0>, #perf.space<"spad", 0>>
+          : memref<512xi8, #perf.space<"spad", 0, 32>> to memref<256xi8, strided<[1], offset: 0>, #perf.space<"spad", 0, 32>>
     %s1 = memref.subview %buf[256] [256] [1]
-          : memref<512xi8, #perf.space<"spad", 0>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0>>
+          : memref<512xi8, #perf.space<"spad", 0, 32>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0, 32>>
     return
   }
 }
@@ -225,11 +225,11 @@ TEST_F(BufferProvenanceTest, OverlappingSubviewsConflict) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
+    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
     %s0 = memref.subview %buf[0] [512] [1]
-          : memref<512xi8, #perf.space<"spad", 0>> to memref<512xi8, strided<[1], offset: 0>, #perf.space<"spad", 0>>
+          : memref<512xi8, #perf.space<"spad", 0, 32>> to memref<512xi8, strided<[1], offset: 0>, #perf.space<"spad", 0, 32>>
     %s1 = memref.subview %buf[256] [256] [1]
-          : memref<512xi8, #perf.space<"spad", 0>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0>>
+          : memref<512xi8, #perf.space<"spad", 0, 32>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0, 32>>
     return
   }
 }
@@ -251,9 +251,9 @@ TEST_F(BufferProvenanceTest, SubviewRootIsAllocNotSubview) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
+    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
     %sub = memref.subview %buf[256] [256] [1]
-           : memref<512xi8, #perf.space<"spad", 0>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0>>
+           : memref<512xi8, #perf.space<"spad", 0, 32>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0, 32>>
     return
   }
 }
@@ -279,9 +279,9 @@ TEST_F(BufferProvenanceTest, SubviewOffsetScaledByElementSize) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %buf = perf.alloc : memref<256xi32, #perf.space<"acc", 0>>
+    %buf = perf.alloc : memref<256xi32, #perf.space<"acc", 0, 16>>
     %sub = memref.subview %buf[64] [64] [1]
-           : memref<256xi32, #perf.space<"acc", 0>> to memref<64xi32, strided<[1], offset: 64>, #perf.space<"acc", 0>>
+           : memref<256xi32, #perf.space<"acc", 0, 16>> to memref<64xi32, strided<[1], offset: 64>, #perf.space<"acc", 0, 16>>
     return
   }
 }
@@ -306,11 +306,11 @@ TEST_F(BufferProvenanceTest, ChainedSubviewAccumulatesOffsets) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
+    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
     %s0 = memref.subview %buf[256] [256] [1]
-          : memref<512xi8, #perf.space<"spad", 0>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0>>
+          : memref<512xi8, #perf.space<"spad", 0, 32>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0, 32>>
     %s1 = memref.subview %s0[64] [128] [1]
-          : memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0>> to memref<128xi8, strided<[1], offset: 320>, #perf.space<"spad", 0>>
+          : memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0, 32>> to memref<128xi8, strided<[1], offset: 320>, #perf.space<"spad", 0, 32>>
     return
   }
 }
@@ -332,9 +332,9 @@ TEST_F(BufferProvenanceTest, ChainedSubviewConflictsWithRoot) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
+    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
     %s0 = memref.subview %buf[256] [256] [1]
-          : memref<512xi8, #perf.space<"spad", 0>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0>>
+          : memref<512xi8, #perf.space<"spad", 0, 32>> to memref<256xi8, strided<[1], offset: 256>, #perf.space<"spad", 0, 32>>
     return
   }
 }
@@ -359,9 +359,9 @@ TEST_F(BufferProvenanceTest, DynamicOffsetSubviewFails) {
   const char *text = R"mlir(
 module {
   func.func @test(%i: index) {
-    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
+    %buf = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
     %sub = memref.subview %buf[%i] [256] [1]
-           : memref<512xi8, #perf.space<"spad", 0>> to memref<256xi8, strided<[1], offset: ?>, #perf.space<"spad", 0>>
+           : memref<512xi8, #perf.space<"spad", 0, 32>> to memref<256xi8, strided<[1], offset: ?>, #perf.space<"spad", 0, 32>>
     return
   }
 }
@@ -379,7 +379,7 @@ TEST_F(BufferProvenanceTest, AllocResultUsedDirectlyIsFullRange) {
   const char *text = R"mlir(
 module {
   func.func @test() {
-    %buf = perf.alloc : memref<128xi8, #perf.space<"spad", 3>>
+    %buf = perf.alloc : memref<128xi8, #perf.space<"spad", 96, 8>>
     return
   }
 }
