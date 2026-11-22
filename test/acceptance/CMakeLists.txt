@@ -21,7 +21,7 @@
 # ---------------------------------------------------------------------------
 
 function(add_perf_fixture_test group name)
-  string(REGEX REPLACE "^[0-9]+_" "" short_group ${group})
+  string(REGEX REPLACE "^[0-9]+_" "" short_group "${group}")
   add_test(
     NAME fixture_${short_group}_${name}
     COMMAND perf --input=${CMAKE_CURRENT_SOURCE_DIR}/${name}.mlir
@@ -32,7 +32,7 @@ function(add_perf_fixture_test group name)
 endfunction()
 
 function(add_perf_fixture_negative_test group name)
-  string(REGEX REPLACE "^[0-9]+_" "" short_group ${group})
+  string(REGEX REPLACE "^[0-9]+_" "" short_group "${group}")
   add_test(
     NAME fixture_${short_group}_${name}
     COMMAND perf --input=${CMAKE_CURRENT_SOURCE_DIR}/${name}.invalid.mlir
@@ -44,4 +44,6 @@ endfunction()
 
 add_subdirectory(0_base)
 add_subdirectory(1_contract)
-add_subdirectory(3_verify_reachability)
+add_subdirectory(2_r1_verify_reachability)
+add_subdirectory(3_r2_verify_loop_free)
+add_subdirectory(4_r3_verify_schedule)

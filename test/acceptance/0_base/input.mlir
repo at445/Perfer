@@ -42,7 +42,7 @@ module {
       resource = #perf.res<"dma_write", 0>
     } : (memref<256xi32, #perf.space<"acc", 0, 16>>, memref<256xi32>, !perf.token) -> !perf.token
 
-    perf.wait [%st0]
+    perf.fence [%st0]
     return
   }
 }

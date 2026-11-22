@@ -1,6 +1,7 @@
 // perf - parse, verify, and simulate perf IR against a target config.
 
 #include "perf/Analysis/ReachabilityVerifier.h"
+#include "perf/Analysis/ScheduleLegalityVerifier.h"
 #include "perf/Dialect/PerfAttrs.h"
 #include "perf/Dialect/PerfDialect.h"
 #include "perf/Dialect/PerfOps.h"
@@ -194,6 +195,11 @@ int main(int argc, char **argv) {
   // R1 reachability: every op's memref operands must be reachable from its
   // placement resource, per the projected contract.
   if (failed(perf::verifyReachability(*mod, target)))
+    return 1;
+
+  // R3 schedule legality: per-resource total order must be a linear
+  // extension of the token partial order.
+  if (failed(perf::verifyScheduleLegality(*mod)))
     return 1;
 
   llvm::outs() << "OK: " << inputFilename << " against " << targetFilename << "\n";

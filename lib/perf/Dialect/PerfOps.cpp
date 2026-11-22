@@ -58,6 +58,13 @@ LogicalResult ContractDefOp::verify() {
   return success();
 }
 
+LogicalResult ScheduleOp::verify() {
+  // Entries are well-typed by ODS; the legality of the declared order
+  // against the token partial order is R3, checked separately in
+  // ScheduleLegalityVerifier.
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // perf.alloc verifier
 //===----------------------------------------------------------------------===//
@@ -157,6 +164,16 @@ void ComputeOp::getEffects(
   effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(1));
   effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(2));
   effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(2));
+}
+
+void FenceOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  // fence is a synchronization join: it observes every input token. A
+  // conservative Read on each operand keeps generic passes from
+  // reordering or deleting it.
+  for (auto &operand : getOperation()->getOpOperands())
+    effects.emplace_back(MemoryEffects::Read::get(), &operand);
 }
 
 //===----------------------------------------------------------------------===//
