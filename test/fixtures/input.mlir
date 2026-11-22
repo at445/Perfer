@@ -20,16 +20,16 @@ module {
       resource = #perf.res<"dma_read", 0>
     } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 32, 32>>, !perf.token) -> !perf.token
 
-    // preload C init
-    %p0 = perf.preload %acc_c0 {
-      role = "output", m = 16, n = 16, init = "zero",
+    // array init: synthesize zeros into PE accumulators (no SRAM read)
+    %p0 = perf.array_init {
+      m = 16, n = 16,
       resource = #perf.res<"array", 0>
-    } : (memref<256xi32, #perf.space<"acc", 0, 16>>) -> !perf.token
+    } : () -> !perf.token
 
     // compute
     %c0 = perf.compute %spad_a0, %spad_b, %acc_c0 [%la, %lb, %p0] {
       m = 16, n = 16, k = 32,
-      accumulate = false, writeback = true,
+      writeback = true,
       resource = #perf.res<"array", 10>
     } : (memref<512xi8, #perf.space<"spad", 0, 32>>,
          memref<512xi8, #perf.space<"spad", 32, 32>>,
