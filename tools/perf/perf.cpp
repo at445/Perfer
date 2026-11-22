@@ -1,5 +1,6 @@
 // perf - parse, verify, and simulate perf IR against a target config.
 
+#include "perf/Analysis/ReachabilityVerifier.h"
 #include "perf/Dialect/PerfAttrs.h"
 #include "perf/Dialect/PerfDialect.h"
 #include "perf/Dialect/PerfOps.h"
@@ -33,8 +34,10 @@ static llvm::cl::opt<std::string> targetFilename(
     llvm::cl::value_desc("design.mlir"), llvm::cl::Required);
 
 static llvm::cl::opt<std::string> priorFilename(
-    "prior", llvm::cl::desc("Simulation prior MLIR file (perf.prior_def)"),
-    llvm::cl::value_desc("prior.mlir"), llvm::cl::Required);
+    "prior",
+    llvm::cl::desc("Simulation prior MLIR file (perf.prior_def). "
+                   "Omit for an uncalibrated (identity) prior."),
+    llvm::cl::value_desc("prior.mlir"), llvm::cl::init(""));
 
 static llvm::cl::opt<std::string> outputFilename(
     "o", llvm::cl::desc("Output filename ('-' for stdout)"),
@@ -114,18 +117,36 @@ static llvm::FailureOr<perf::TargetModel> loadConfig(
   if (failed(targetDef))
     return failure();
 
-  auto priorMod = parseModuleFile(priorFile, context);
-  if (!priorMod)
-    return failure();
-  auto priorDef = findSingleTopLevel<perf::PriorDefOp>(*priorMod, priorFile);
-  if (failed(priorDef))
-    return failure();
+  perf::DesignAttr design = targetDef->getConfig();
 
-  auto modelOr = perf::TargetModel::build(targetDef->getConfig(),
-                                          priorDef->getConfig());
+  perf::PriorAttr prior;
+  if (priorFile.empty()) {
+    // Identity prior: zero calibration corrections. "No calibration data"
+    // and "zero corrections" are the same thing physically; modelling it
+    // as a real attr keeps the simulator free of optional branches.
+    auto zeroCalibration = perf::CalibrationAttr::get(
+        &context, /*extra_fill_cycles=*/0, /*extra_drain_cycles=*/0,
+        /*extra_preload_cycles=*/0, /*extra_writeback_cycles=*/0,
+        /*host_issue_cycles=*/0);
+    prior = perf::PriorAttr::get(&context, design.getVersion(),
+                                 "identity", zeroCalibration);
+  } else {
+    auto priorMod = parseModuleFile(priorFile, context);
+    if (!priorMod)
+      return failure();
+    auto priorDef = findSingleTopLevel<perf::PriorDefOp>(*priorMod,
+                                                         priorFile);
+    if (failed(priorDef))
+      return failure();
+    prior = priorDef->getConfig();
+  }
+
+  auto modelOr = perf::TargetModel::build(design, prior);
   if (failed(modelOr)) {
     llvm::errs() << "error: failed to build TargetModel from " << designFile
-                 << " + " << priorFile << "\n";
+                 << (priorFile.empty() ? " (identity prior)"
+                                       : " + " + priorFile)
+                 << "\n";
     return failure();
   }
   return modelOr;
@@ -151,9 +172,12 @@ int main(int argc, char **argv) {
     return 1;
   auto target = std::move(*targetOr);
 
-  llvm::outs() << "Loaded design: " << target.getDesignAttr().getTargetName()
-               << " with prior: " << target.getPriorAttr().getTargetName()
-               << "\n";
+  llvm::outs() << "Loaded design: " << target.getDesignAttr().getTargetName();
+  if (priorFilename.empty())
+    llvm::outs() << " (uncalibrated)\n";
+  else
+    llvm::outs() << " with prior: "
+                 << target.getPriorAttr().getTargetName() << "\n";
 
   if (dumpContract) {
     auto contractMod = target.materializeContract(context);
@@ -165,6 +189,11 @@ int main(int argc, char **argv) {
   // Parse program
   auto mod = parseModuleFile(inputFilename, context);
   if (!mod)
+    return 1;
+
+  // R1 reachability: every op's memref operands must be reachable from its
+  // placement resource, per the projected contract.
+  if (failed(perf::verifyReachability(*mod, target)))
     return 1;
 
   llvm::outs() << "OK: " << inputFilename << " against " << targetFilename << "\n";

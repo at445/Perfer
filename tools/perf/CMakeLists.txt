@@ -8,6 +8,7 @@ add_llvm_executable(perf
 llvm_update_compile_flags(perf)
 
 target_link_libraries(perf PRIVATE
+  MLIRPerfAnalysis
   MLIRPerfDialect
   MLIRPerfSim
   MLIRParser

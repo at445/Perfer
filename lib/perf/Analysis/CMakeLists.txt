@@ -4,6 +4,7 @@ add_mlir_library(MLIRPerfAnalysis
 
   LINK_LIBS PUBLIC
   MLIRPerfDialect
+  MLIRPerfSim
   MLIRIR
   MLIRMemRefDialect
 )

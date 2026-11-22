@@ -30,7 +30,7 @@ module {
     %c0 = perf.compute %spad_a0, %spad_b, %acc_c0 [%la, %lb, %p0] {
       m = 16, n = 16, k = 32,
       writeback = true,
-      resource = #perf.res<"array", 10>
+      resource = #perf.res<"array", 0>
     } : (memref<512xi8, #perf.space<"spad", 0, 32>>,
          memref<512xi8, #perf.space<"spad", 32, 32>>,
          memref<256xi32, #perf.space<"acc", 0, 16>>,
