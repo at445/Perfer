@@ -67,6 +67,23 @@ Two caveats:
 
 The config is written in the DSE engineer's vocabulary—physical structure parameters such as port counts, memory geometry, and subsystem microarchitecture—while simulation priors (calibration state) live in a separate file shared unchanged across design points. The compiler–simulator contract (executor instances, internal links) is projected from these parameters rather than written by hand; `perf --dump-contract` prints it for inspection. See `test/fixtures/target.mlir` and `test/fixtures/prior.mlir` for complete examples.
 
+```mlir
+// a minimal design point
+perf.target_def @systolic_npu_v1 #perf.design<
+  version = 5,
+  target_name = "systolic_npu_v1",
+  frequency_mhz = 1000,
+  memory_spaces = [
+    #perf.memspace<name = "spad", capacity_kib = 256, banks = 4, ...>,
+    #perf.memspace<name = "acc",  capacity_kib = 64,  banks = 4, ...>
+  ],
+  dma_read_ports = 1, dma_write_ports = 1, arrays = 1,
+  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, ...>,
+  array_uarch = #perf.array<mesh_rows = 16, mesh_cols = 16, ...>,
+  share_dram_bus = true
+>
+```
+
 The IR describes how the program executes: where buffers live, which DMA channel each transfer takes, which array computes, and who depends on whom.
 
 ```mlir
