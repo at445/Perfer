@@ -16,25 +16,99 @@
 using namespace mlir;
 using namespace perf;
 
+// Shared prior (calibration state) for building TargetModels in tests.
+static constexpr const char *kPrior = R"mlir(
+module attributes {perf.prior = #perf.prior<
+  version = 5,
+  target_name = "test_prior",
+  calibration = #perf.calibration<
+    extra_fill_cycles = 0, extra_drain_cycles = 0,
+    extra_preload_cycles = 0, extra_writeback_cycles = 0,
+    host_issue_cycles = 0
+  >
+>} {}
+)mlir";
+
+// Baseline design: 1 DMA read port, 1 DMA write port, 1 array, shared bus.
+static constexpr const char *kDesign = R"mlir(
+module attributes {perf.design = #perf.design<
+  version = 5,
+  target_name = "test_npu",
+  frequency_mhz = 1000,
+  memory_spaces = [
+    #perf.memspace<
+      name = "spad",
+      capacity_kib = 256, banks = 4,
+      read_ports = 4, write_ports = 4,
+      port_width_bytes = 16, row_width_bytes = 16
+    >,
+    #perf.memspace<
+      name = "acc",
+      capacity_kib = 64, banks = 4,
+      read_ports = 1, write_ports = 1,
+      port_width_bytes = 64, row_width_bytes = 64
+    >
+  ],
+  dma_read_ports = 1,
+  dma_write_ports = 1,
+  arrays = 1,
+  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
+                          max_outstanding = 8, burst_bytes = 64>,
+  array_uarch = #perf.array<topology = "systolic",
+                            mesh_rows = 16, mesh_cols = 16,
+                            tile_rows = 1, tile_cols = 1,
+                            pe_latency_cycles = 1,
+                            input_skew = true,
+                            inter_tile_pipelined = true>,
+  share_dram_bus = true
+>} {}
+)mlir";
+
 class ReachabilityVerifierTest : public ::testing::Test {
 protected:
   void SetUp() override {
     context.loadDialect<PerfDialect>();
     context.loadDialect<func::FuncDialect>();
     context.loadDialect<memref::MemRefDialect>();
+
+    auto priorMod = parseSourceString<ModuleOp>(kPrior, &context);
+    ASSERT_TRUE(priorMod);
+    auto priorAttr = getPriorAttr(*priorMod);
+    ASSERT_TRUE(priorAttr);
+
+    auto designMod = parseSourceString<ModuleOp>(kDesign, &context);
+    ASSERT_TRUE(designMod);
+    auto designAttr = getDesignAttr(*designMod);
+    ASSERT_TRUE(designAttr);
+
+    auto modelOr = TargetModel::build(designAttr, priorAttr);
+    ASSERT_TRUE(succeeded(modelOr));
+    target = std::make_unique<TargetModel>(std::move(*modelOr));
   }
 
   MLIRContext context;
-  OwningOpRef<ModuleOp> module;
+  std::unique_ptr<TargetModel> target;
 
-  ModuleOp parseModule(StringRef text) {
-    module = parseSourceString<ModuleOp>(text, &context);
-    return module ? *module : nullptr;
+  DesignAttr getDesignAttr(ModuleOp mod) {
+    return llvm::dyn_cast_if_present<DesignAttr>(
+        mod->getAttr("perf.design"));
+  }
+
+  PriorAttr getPriorAttr(ModuleOp mod) {
+    return llvm::dyn_cast_if_present<PriorAttr>(
+        mod->getAttr("perf.prior"));
+  }
+
+  LogicalResult verify(StringRef programText) {
+    auto mod = parseSourceString<ModuleOp>(programText, &context);
+    if (!mod)
+      return failure();
+    return verifyReachability(*mod, *target);
   }
 };
 
 //===----------------------------------------------------------------------===//
-// Positive: all ops access reachable spaces
+// Positive: the canonical matmul fixture passes
 //===----------------------------------------------------------------------===//
 
 TEST_F(ReachabilityVerifierTest, ValidMatmulPasses) {
@@ -43,38 +117,38 @@ module {
   func.func @matmul_impl(%A: memref<512xi8>, %B: memref<512xi8>, %C: memref<256xi32>) {
     %free = perf.token.init
 
-    %spad_a0 = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
-    %spad_b  = perf.alloc : memref<512xi8, #perf.space<"spad", 2>>
-    %acc_c0  = perf.alloc : memref<256xi32, #perf.space<"acc", 0>>
+    %spad_a0 = perf.alloc : memref<512xi8, #perf.space<"spad", 0, 32>>
+    %spad_b  = perf.alloc : memref<512xi8, #perf.space<"spad", 32, 32>>
+    %acc_c0  = perf.alloc : memref<256xi32, #perf.space<"acc", 0, 16>>
 
     %la = perf.dma_load %A, %spad_a0 [%free] {
       bytes = 512,
       resource = #perf.res<"dma_read", 0>
-    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 0>>, !perf.token) -> !perf.token
+    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 0, 32>>, !perf.token) -> !perf.token
 
     %lb = perf.dma_load %B, %spad_b [%free] {
       bytes = 512,
       resource = #perf.res<"dma_read", 0>
-    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 2>>, !perf.token) -> !perf.token
+    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 32, 32>>, !perf.token) -> !perf.token
 
-    %p0 = perf.preload %acc_c0 {
-      role = "output", m = 16, n = 16, init = "zero",
+    %p0 = perf.array_init {
+      m = 16, n = 16,
       resource = #perf.res<"array", 0>
-    } : (memref<256xi32, #perf.space<"acc", 0>>) -> !perf.token
+    } : () -> !perf.token
 
     %c0 = perf.compute %spad_a0, %spad_b, %acc_c0 [%la, %lb, %p0] {
       m = 16, n = 16, k = 32,
-      accumulate = false, writeback = true,
-      resource = #perf.res<"array", 10>
-    } : (memref<512xi8, #perf.space<"spad", 0>>,
-         memref<512xi8, #perf.space<"spad", 2>>,
-         memref<256xi32, #perf.space<"acc", 0>>,
+      writeback = true,
+      resource = #perf.res<"array", 0>
+    } : (memref<512xi8, #perf.space<"spad", 0, 32>>,
+         memref<512xi8, #perf.space<"spad", 32, 32>>,
+         memref<256xi32, #perf.space<"acc", 0, 16>>,
          !perf.token, !perf.token, !perf.token) -> !perf.token
 
     %st0 = perf.dma_store %acc_c0, %C [%c0] {
       bytes = 1024,
       resource = #perf.res<"dma_write", 0>
-    } : (memref<256xi32, #perf.space<"acc", 0>>, memref<256xi32>, !perf.token) -> !perf.token
+    } : (memref<256xi32, #perf.space<"acc", 0, 16>>, memref<256xi32>, !perf.token) -> !perf.token
 
     perf.wait [%st0]
     return
@@ -82,153 +156,124 @@ module {
 }
 )mlir";
 
-  auto mod = parseModule(text);
-  ASSERT_TRUE(mod);
-
-  EXPECT_TRUE(succeeded(verifyReachability(mod)));
+  EXPECT_TRUE(succeeded(verify(text)));
 }
 
-//===----------------------------------------------------------------------===//
-// Note: op verifiers already reject host-DRAM operands for compute/preload.
-// R1's value is for perf.prim and future resource kinds without op-level
-// verification. We test R1's pass-through for valid programs and its
-// rejection of unknown resource kinds.
-//===----------------------------------------------------------------------===//
-
-TEST_F(ReachabilityVerifierTest, ComputeWithOnChipOperandsPasses) {
+// array_init with an operand reads old partial sums from the acc space.
+TEST_F(ReachabilityVerifierTest, ArrayInitWithOperandPasses) {
   const char *text = R"mlir(
 module {
-  func.func @test() {
-    %spad_a = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
-    %spad_b = perf.alloc : memref<512xi8, #perf.space<"spad", 1>>
-    %acc_c  = perf.alloc : memref<256xi32, #perf.space<"acc", 0>>
-
-    %c0 = perf.compute %spad_a, %spad_b, %acc_c [] {
-      m = 16, n = 16, k = 32,
-      accumulate = false, writeback = true,
+  func.func @t(%acc: memref<256xi32, #perf.space<"acc", 0, 16>>) {
+    %t = perf.token.init
+    %i0 = perf.array_init %acc [%t] {
+      m = 16, n = 16,
       resource = #perf.res<"array", 0>
-    } : (memref<512xi8, #perf.space<"spad", 0>>,
-         memref<512xi8, #perf.space<"spad", 1>>,
-         memref<256xi32, #perf.space<"acc", 0>>) -> !perf.token
-
-    perf.wait [%c0]
+    } : (memref<256xi32, #perf.space<"acc", 0, 16>>, !perf.token) -> !perf.token
     return
   }
 }
 )mlir";
 
-  auto mod = parseModule(text);
-  ASSERT_TRUE(mod);
-
-  EXPECT_TRUE(succeeded(verifyReachability(mod)));
+  EXPECT_TRUE(succeeded(verify(text)));
 }
 
-TEST_F(ReachabilityVerifierTest, PreloadWithOnChipOperandPasses) {
+//===----------------------------------------------------------------------===//
+// Negative: placement resource must exist in the contract
+//===----------------------------------------------------------------------===//
+
+TEST_F(ReachabilityVerifierTest, UnknownExecutorKindFails) {
   const char *text = R"mlir(
 module {
-  func.func @test() {
-    %acc_c = perf.alloc : memref<256xi32, #perf.space<"acc", 0>>
-
-    %p0 = perf.preload %acc_c {
-      role = "output", m = 16, n = 16, init = "zero",
-      resource = #perf.res<"array", 0>
-    } : (memref<256xi32, #perf.space<"acc", 0>>) -> !perf.token
-
-    perf.wait [%p0]
+  func.func @t(%A: memref<512xi8>, %B: memref<512xi8, #perf.space<"spad", 0, 32>>) {
+    %t = perf.token.init
+    %l = perf.dma_load %A, %B [%t] {
+      bytes = 512,
+      resource = #perf.res<"dma_rade", 0>
+    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 0, 32>>, !perf.token) -> !perf.token
     return
   }
 }
 )mlir";
 
-  auto mod = parseModule(text);
-  ASSERT_TRUE(mod);
+  EXPECT_TRUE(failed(verify(text)));
+}
 
-  EXPECT_TRUE(succeeded(verifyReachability(mod)));
+TEST_F(ReachabilityVerifierTest, ExecutorIndexOutOfRangeFails) {
+  const char *text = R"mlir(
+module {
+  func.func @t(%A: memref<512xi8>, %B: memref<512xi8, #perf.space<"spad", 0, 32>>) {
+    %t = perf.token.init
+    %l = perf.dma_load %A, %B [%t] {
+      bytes = 512,
+      resource = #perf.res<"dma_read", 7>
+    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 0, 32>>, !perf.token) -> !perf.token
+    return
+  }
+}
+)mlir";
+
+  EXPECT_TRUE(failed(verify(text)));
+}
+
+// Links are internal: they cannot be referenced by IR placement.
+TEST_F(ReachabilityVerifierTest, LinkKindRejectedAsPlacement) {
+  const char *text = R"mlir(
+module {
+  func.func @t(%A: memref<512xi8>, %B: memref<512xi8, #perf.space<"spad", 0, 32>>) {
+    %t = perf.token.init
+    %l = perf.dma_load %A, %B [%t] {
+      bytes = 512,
+      resource = #perf.res<"dram_bus", 0>
+    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 0, 32>>, !perf.token) -> !perf.token
+    return
+  }
+}
+)mlir";
+
+  EXPECT_TRUE(failed(verify(text)));
 }
 
 //===----------------------------------------------------------------------===//
-// dma_load src on-chip is fine for R1 (direction is op verifier's job)
+// Negative: operand space must be declared and reachable
 //===----------------------------------------------------------------------===//
 
-TEST_F(ReachabilityVerifierTest, DmaLoadSrcOnChipPassesR1) {
+TEST_F(ReachabilityVerifierTest, UnknownMemorySpaceFails) {
   const char *text = R"mlir(
 module {
-  func.func @test() {
-    %spad_a = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
-    %spad_b = perf.alloc : memref<512xi8, #perf.space<"spad", 1>>
-
-    %la = perf.dma_load %spad_a, %spad_b [] {
+  func.func @t(%A: memref<512xi8>, %B: memref<512xi8, #perf.space<"typo_spad", 0, 32>>) {
+    %t = perf.token.init
+    %l = perf.dma_load %A, %B [%t] {
       bytes = 512,
       resource = #perf.res<"dma_read", 0>
-    } : (memref<512xi8, #perf.space<"spad", 0>>,
-         memref<512xi8, #perf.space<"spad", 1>>) -> !perf.token
-
-    perf.wait [%la]
+    } : (memref<512xi8>, memref<512xi8, #perf.space<"typo_spad", 0, 32>>, !perf.token) -> !perf.token
     return
   }
 }
 )mlir";
 
-  auto mod = parseModule(text);
-  ASSERT_TRUE(mod);
-
-  // R1 only checks connectivity, not direction. dma_read can access spad.
-  EXPECT_TRUE(succeeded(verifyReachability(mod)));
+  EXPECT_TRUE(failed(verify(text)));
 }
 
-//===----------------------------------------------------------------------===//
-// dma_store dst on-chip is fine for R1
-//===----------------------------------------------------------------------===//
-
-TEST_F(ReachabilityVerifierTest, DmaStoreDstOnChipPassesR1) {
+// The array is not a DMA bridge: it must not touch host memory.
+TEST_F(ReachabilityVerifierTest, ArrayCannotAccessHostMemory) {
   const char *text = R"mlir(
 module {
-  func.func @test() {
-    %acc_c = perf.alloc : memref<256xi32, #perf.space<"acc", 0>>
-    %spad  = perf.alloc : memref<256xi32, #perf.space<"spad", 0>>
-
-    %st0 = perf.dma_store %acc_c, %spad [] {
-      bytes = 1024,
-      resource = #perf.res<"dma_write", 0>
-    } : (memref<256xi32, #perf.space<"acc", 0>>,
-         memref<256xi32, #perf.space<"spad", 0>>) -> !perf.token
-
-    perf.wait [%st0]
+  func.func @t(%A: memref<512xi8>,
+               %B: memref<512xi8, #perf.space<"spad", 0, 32>>,
+               %C: memref<256xi32, #perf.space<"acc", 0, 16>>) {
+    %t = perf.token.init
+    %c0 = perf.compute %A, %B, %C [%t] {
+      m = 16, n = 16, k = 32,
+      writeback = true,
+      resource = #perf.res<"array", 0>
+    } : (memref<512xi8>,
+         memref<512xi8, #perf.space<"spad", 0, 32>>,
+         memref<256xi32, #perf.space<"acc", 0, 16>>,
+         !perf.token) -> !perf.token
     return
   }
 }
 )mlir";
 
-  auto mod = parseModule(text);
-  ASSERT_TRUE(mod);
-
-  // R1 only checks connectivity, not direction.
-  EXPECT_TRUE(succeeded(verifyReachability(mod)));
-}
-
-//===----------------------------------------------------------------------===//
-// Negative: unknown resource kind
-//===----------------------------------------------------------------------===//
-
-TEST_F(ReachabilityVerifierTest, UnknownResourceKindFails) {
-  const char *text = R"mlir(
-module {
-  func.func @test(%A: memref<512xi8>) {
-    %spad = perf.alloc : memref<512xi8, #perf.space<"spad", 0>>
-
-    %la = perf.dma_load %A, %spad [] {
-      bytes = 512,
-      resource = #perf.res<"nonexistent", 0>
-    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 0>>) -> !perf.token
-
-    perf.wait [%la]
-    return
-  }
-}
-)mlir";
-
-  auto mod = parseModule(text);
-  ASSERT_TRUE(mod);
-
-  EXPECT_TRUE(failed(verifyReachability(mod)));
+  EXPECT_TRUE(failed(verify(text)));
 }
