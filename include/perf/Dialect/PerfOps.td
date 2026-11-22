@@ -142,23 +142,31 @@ def Perf_DmaStoreOp : Perf_MemEffectOp<"dma_store"> {
 }
 
 //===----------------------------------------------------------------------===//
-// perf.preload
+// perf.array_init
 //===----------------------------------------------------------------------===//
 
-def Perf_PreloadOp : Perf_MemEffectOp<"preload"> {
-  let summary = "Load the stationary operand (C init or weights) into the array.";
+def Perf_ArrayInitOp : Perf_MemEffectOp<"array_init",
+    [AttrSizedOperandSegments]> {
+  let summary = "Initialize the array's PE accumulator register state.";
+  let description = [{
+    Establishes the initial state of the PE accumulator registers.
+    The memref operand is Optional:
+
+    - No operand: synthesizes zeros (zero-fill path). Does not read SRAM,
+      declares no Read effect, and produces no RAW edge.
+    - With operand: reads the old partial sums / bias in that region into
+      the PE registers, producing an acc bank read.
+  }];
   let arguments = (ins
-    AnyMemRef:$dst,
+    Optional<AnyMemRef>:$dst,
     Variadic<Perf_TokenOperand>:$deps,
-    StrAttr:$role,     // "output" | "weight" | "input"
     I64Attr:$m,
     I64Attr:$n,
-    StrAttr:$init,     // "zero" | "bias" | "keep"
     Perf_ResRefAttr:$resource
   );
   let results = (outs Perf_TokenType:$token);
   let assemblyFormat = [{
-    $dst (`[` $deps^ `]`)? attr-dict `:` functional-type(operands, results)
+    ($dst^)? (`[` $deps^ `]`)? attr-dict `:` functional-type(operands, results)
   }];
   let hasVerifier = 1;
 }
@@ -169,6 +177,13 @@ def Perf_PreloadOp : Perf_MemEffectOp<"preload"> {
 
 def Perf_ComputeOp : Perf_MemEffectOp<"compute"> {
   let summary = "One array compute step of a tiled matmul.";
+  let description = [{
+    Always accumulates onto the array's current PE state (PE += A x B).
+    The PE state must be established by a perf.array_init or a previous
+    perf.compute, traceable along the token chain (R6). Compute never
+    reads the C bank: C reads happen only in array_init (operand form),
+    C writes only in the writeback phase.
+  }];
   let arguments = (ins
     AnyMemRef:$a,
     AnyMemRef:$b,
@@ -177,7 +192,6 @@ def Perf_ComputeOp : Perf_MemEffectOp<"compute"> {
     I64Attr:$m,
     I64Attr:$n,
     I64Attr:$k,
-    BoolAttr:$accumulate,
     BoolAttr:$writeback,
     Perf_ResRefAttr:$resource
   );

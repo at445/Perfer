@@ -80,18 +80,18 @@ LogicalResult DmaStoreOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// perf.preload verifier
+// perf.array_init verifier
 //===----------------------------------------------------------------------===//
 
-LogicalResult PreloadOp::verify() {
+LogicalResult ArrayInitOp::verify() {
   if (getM() <= 0 || getN() <= 0)
     return emitOpError("expected m > 0 and n > 0");
 
-  StringRef role = getRole();
-  if (role != "output" && role != "weight" && role != "input")
-    return emitOpError("expected role in {output, weight, input}");
-
-  return verifyPerfSpaceMemref(getOperation(), getDst().getType(), "dst");
+  // Operand is Optional: absent = synthesize zeros (no SRAM read),
+  // present = read old partial sums from that region.
+  if (Value dst = getDst())
+    return verifyPerfSpaceMemref(getOperation(), dst.getType(), "dst");
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -130,10 +130,13 @@ void DmaStoreOp::getEffects(
   effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(1));
 }
 
-void PreloadOp::getEffects(
+void ArrayInitOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
-  effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0));
+  // With an operand, array_init reads the old partial sums (RAW edge);
+  // without one it synthesizes zeros and touches no memory.
+  if (getDst())
+    effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(0));
 }
 
 void ComputeOp::getEffects(

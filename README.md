@@ -93,7 +93,7 @@ The IR describes how the program executes: where buffers live, which DMA channel
 
 // array compute: issued after %t0 and %p0 complete, uses array 0
 %c0 = perf.compute %buf_a, %buf_b, %acc_c [%t0, %p0]
-        {m = 16, n = 16, k = 32, accumulate = false, writeback = true,
+        {m = 16, n = 16, k = 32, writeback = true,
          resource = #perf.res<array, 0>} : !perf.token
 ```
 
