@@ -1,5 +1,6 @@
 // perf - parse, verify, and simulate perf IR against a target config.
 
+#include "perf/Analysis/ArrayStateVerifier.h"
 #include "perf/Analysis/ReachabilityVerifier.h"
 #include "perf/Analysis/ScheduleLegalityVerifier.h"
 #include "perf/Analysis/WriteConflictVerifier.h"
@@ -206,6 +207,11 @@ int main(int argc, char **argv) {
   // R4 write conflicts: conflicting accesses with at least one write must
   // be ordered by the token partial order.
   if (failed(perf::verifyWriteConflict(*mod)))
+    return 1;
+
+  // R6 array PE-state provenance: compute's PE state must trace back to
+  // array_init or an earlier compute along the token chain.
+  if (failed(perf::verifyArrayState(*mod)))
     return 1;
 
   llvm::outs() << "OK: " << inputFilename << " against " << targetFilename << "\n";

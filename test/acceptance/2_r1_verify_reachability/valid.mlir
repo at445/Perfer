@@ -46,13 +46,33 @@ module {
     return
   }
 
-  // array_init with an operand: reads old partial sums from the acc space.
-  func.func @array_init_with_operand(%acc: memref<256xi32, #perf.space<"acc", 0, 16>>) {
+  // array_init with an operand: reads old partial sums from the acc
+  // space. The token orders it after the compute that produced them.
+  func.func @array_init_with_operand(%acc: memref<256xi32, #perf.space<"acc", 0, 16>>,
+                                     %spad: memref<512xi8, #perf.space<"spad", 0, 32>>) {
     %t = perf.token.init
-    %i0 = perf.array_init %acc [%t] {
+
+    %i0 = perf.array_init {
+      m = 16, n = 16,
+      resource = #perf.res<"array", 0>
+    } : () -> !perf.token
+
+    %c0 = perf.compute %spad, %spad, %acc [%i0] {
+      m = 16, n = 16, k = 32,
+      writeback = true,
+      resource = #perf.res<"array", 0>
+    } : (memref<512xi8, #perf.space<"spad", 0, 32>>,
+         memref<512xi8, #perf.space<"spad", 0, 32>>,
+         memref<256xi32, #perf.space<"acc", 0, 16>>,
+         !perf.token) -> !perf.token
+
+    // Reads c0's written-back partial sums, ordered by the token.
+    %i1 = perf.array_init %acc [%c0] {
       m = 16, n = 16,
       resource = #perf.res<"array", 0>
     } : (memref<256xi32, #perf.space<"acc", 0, 16>>, !perf.token) -> !perf.token
+
+    perf.fence [%i1]
     return
   }
 

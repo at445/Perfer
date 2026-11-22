@@ -1,4 +1,5 @@
 add_mlir_library(MLIRPerfAnalysis
+  ArrayStateVerifier.cpp
   BufferProvenance.cpp
   ReachabilityVerifier.cpp
   ScheduleLegalityVerifier.cpp
