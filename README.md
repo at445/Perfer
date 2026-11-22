@@ -61,7 +61,7 @@ Hardware parameters such as bandwidth, capacity, and latency live only in the co
 Two caveats:
 
 1. **Sweeping configs with a fixed IR measures "how this schedule performs on that machine", not necessarily the machine's optimum.** The schedule in the IR was generated for one configuration; as hardware parameters change, the optimal schedule may change with them. Strict DSE should let the compiler regenerate the IR for each candidate config, with Perfer evaluating each one faithfully. Since Perfer consumes the compiler's real output, anything evaluated can be reproduced by the compiler as-is.
-2. **Some parameters affect the legality of the IR.** For example, `perf.alloc` fixes the scratchpad footprint in the IR; if `capacity_kib` in the config is shrunk below that footprint, verification fails with an error instead of producing a simulation result.
+2. **Some parameters affect the legality of the IR.** For example, `perf.alloc` fixes the scratchpad footprint in the IR; if a memory space's `capacity_kib` in the config is shrunk below that footprint, verification fails with an error instead of producing a simulation result.
 
 ## Config and IR example
 
@@ -69,13 +69,22 @@ The config describes what the machine has, how fast, and how large:
 
 ```mlir
 #target = #perf.target<
-  version = 3,                      // config schema version
+  version = 4,                      // config schema version
   target_name = "systolic_npu_v1",
   frequency_mhz = 1000,
-  array      = #perf.array<mesh_rows = 16, mesh_cols = 16, ...>,
-  scratchpad = #perf.sram<capacity_kib = 256, banks = 4, ...>,
-  dma        = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20, ...>,
-  resources  = [#perf.resource_family<kind = "dma_read", count = 1, ...>, ...]
+  memory_spaces = [                 // named storage: capacity, banking, ports, row width
+    #perf.memspace<name = "spad", capacity_kib = 256, banks = 4, ...>,
+    #perf.memspace<name = "acc",  capacity_kib = 64,  banks = 4, ...>
+  ],
+  executors = [                     // executor resources referenced by IR placement
+    #perf.executor_family<kind = "dma_read", count = 1, in_order = true,
+                          spaces = ["spad", "acc"], config = #perf.dma<...>>,
+    #perf.executor_family<kind = "array",    count = 1, in_order = true,
+                          spaces = ["spad", "acc"], config = #perf.array<...>>
+  ],
+  links = [                         // internal contention channels (cost-model only)
+    #perf.link<kind = "dram_bus", count = 1>
+  ]
 >
 ```
 
@@ -110,12 +119,12 @@ Gemmini is currently the only planned calibration target, with its RTL simulatio
 | Networks    | end-to-end sequences of operator layers                      | mean and max error within ±10%, with covered layer types stated | Not started |
 | LLMs        | small to mainstream-scale LLMs                               | no absolute-error commitment; trend and ranking only         | Not started |
 
-- Simple ops are the calibration anchor: golden tests align every op's start/end cycle by cycle, and the basic parameters (DMA latency, preload, stream, fill/drain) are calibrated at this level.
+- Simple ops are the calibration anchor: golden tests align every op's start/end cycle by cycle, and the basic parameters (DMA latency, array_init, stream, fill/drain) are calibrated at this level.
 - Complex ops introduce stalls and overlap, mainly exercising cross-resource bubble modeling.
 - Network-level errors both accumulate and cancel, so they are reported as a distribution rather than per-layer commitments.
 - For candidate-comparison scenarios (before/after, autotuning), we additionally report Kendall's τ and top-k hit rate for candidate ranking.
 
-When errors appear, attribution follows a fixed order: DMA → preload/writeback → array stream → fill/drain → cross-resource bubbles, and the cost model and config are corrected accordingly.
+When errors appear, attribution follows a fixed order: DMA → array_init/writeback → array stream → fill/drain → cross-resource bubbles, and the cost model and config are corrected accordingly.
 
 ## Design principles
 
