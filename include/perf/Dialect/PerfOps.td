@@ -117,6 +117,34 @@ def Perf_ContractDefOp : Perf_Op<"contract_def", [Symbol, NoMemoryEffect]> {
 }
 
 //===----------------------------------------------------------------------===//
+// perf.schedule
+//===----------------------------------------------------------------------===//
+
+def Perf_ScheduleOp : Perf_Op<"schedule", [NoMemoryEffect]> {
+  let summary = "Module-level schedule: per-resource total orders by sched.name.";
+  let description = [{
+    Declares the execution order of executor ops on in-order resources,
+    as an explicit annotation layer separate from the token partial
+    order (spec section 0.4). Each entry names one resource instance and
+    lists the sched.name identities of its ops in execution order.
+
+    The order given here is a linear extension requirement checked by R3:
+    it must not contradict the token partial order. Ops not referenced by
+    any entry keep the default block program order (spec section 4.1).
+
+    Example (placed at the top of the module, before the func ops):
+      perf.schedule {
+        entries = [#perf.schedule_entry<#perf.res<"dma_read", 0>, ["load_b", "load_a"]>]
+      }
+  }];
+  let arguments = (ins
+    ArrayAttr:$entries
+  );
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // perf.alloc
 //===----------------------------------------------------------------------===//
 
@@ -154,13 +182,18 @@ def Perf_DmaLoadOp : Perf_MemEffectOp<"dma_load"> {
   let description = [{
     Explicit DMA load from a main-memory memref to an on-chip buffer.
     Direction is fixed by the op name. Placement is given by resource.
+
+    `sched_name` is the optional schedule identity: ops that carry it
+    may be referenced by a perf.schedule entry to give their resource a
+    non-default execution order.
   }];
   let arguments = (ins
     AnyMemRef:$src,
     AnyMemRef:$dst,
     Variadic<Perf_TokenOperand>:$deps,
     I64Attr:$bytes,
-    Perf_ResRefAttr:$resource
+    Perf_ResRefAttr:$resource,
+    OptionalAttr<StrAttr>:$sched_name
   );
   let results = (outs Perf_TokenType:$token);
   let assemblyFormat = [{
@@ -177,7 +210,8 @@ def Perf_DmaStoreOp : Perf_MemEffectOp<"dma_store"> {
     AnyMemRef:$dst,
     Variadic<Perf_TokenOperand>:$deps,
     I64Attr:$bytes,
-    Perf_ResRefAttr:$resource
+    Perf_ResRefAttr:$resource,
+    OptionalAttr<StrAttr>:$sched_name
   );
   let results = (outs Perf_TokenType:$token);
   let assemblyFormat = [{
@@ -208,7 +242,8 @@ def Perf_ArrayInitOp : Perf_MemEffectOp<"array_init",
     Variadic<Perf_TokenOperand>:$deps,
     I64Attr:$m,
     I64Attr:$n,
-    Perf_ResRefAttr:$resource
+    Perf_ResRefAttr:$resource,
+    OptionalAttr<StrAttr>:$sched_name
   );
   let results = (outs Perf_TokenType:$token);
   let assemblyFormat = [{
@@ -239,7 +274,8 @@ def Perf_ComputeOp : Perf_MemEffectOp<"compute"> {
     I64Attr:$n,
     I64Attr:$k,
     BoolAttr:$writeback,
-    Perf_ResRefAttr:$resource
+    Perf_ResRefAttr:$resource,
+    OptionalAttr<StrAttr>:$sched_name
   );
   let results = (outs Perf_TokenType:$token);
   let assemblyFormat = [{
@@ -249,11 +285,18 @@ def Perf_ComputeOp : Perf_MemEffectOp<"compute"> {
 }
 
 //===----------------------------------------------------------------------===//
-// perf.wait
+// perf.fence
 //===----------------------------------------------------------------------===//
 
-def Perf_WaitOp : Perf_Op<"wait", []> {
+def Perf_FenceOp : Perf_MemEffectOp<"fence"> {
   let summary = "Join point for completion tokens.";
+  let description = [{
+    Event join: waits for the given completion tokens. This is a
+    synchronization side effect, not a no-op; the MemoryEffects
+    declaration keeps generic passes (DCE/LICM/reordering) from
+    treating it as dead or movable, per the spec section 2.3 discipline
+    that token-carrying ops must not be reordered by generic passes.
+  }];
   let arguments = (ins Variadic<Perf_TokenOperand>:$tokens);
   let assemblyFormat = "(`[` $tokens^ `]`)? attr-dict";
 }

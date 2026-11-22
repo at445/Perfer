@@ -34,6 +34,16 @@ def Perf_ResRefAttr : Perf_AttrDef<"ResRef"> {
   let assemblyFormat = "`<` $kind `,` $index `>`";
 }
 
+def Perf_ScheduleEntryAttr : Perf_AttrDef<"ScheduleEntry"> {
+  let mnemonic = "schedule_entry";
+  let summary = "Total order of schedulable ops on one resource instance.";
+  let parameters = (ins
+    "::perf::ResRefAttr":$resource,
+    "::mlir::ArrayAttr":$ops
+  );
+  let assemblyFormat = "`<` $resource `,` $ops `>`";
+}
+
 //===----------------------------------------------------------------------===//
 // Target config attributes
 //===----------------------------------------------------------------------===//
