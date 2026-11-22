@@ -16,6 +16,7 @@ Perfer replays and never schedules. instruction order, resource assignment, and 
 - [How it differs from other tools](#how-it-differs-from-other-tools)
 - [Use cases](#use-cases)
 - [Config and IR example](#config-and-ir-example)
+- [Simulation priors (optional)](#simulation-priors-optional)
 - [Accuracy targets and calibration](#accuracy-targets-and-calibration)
 - [Design principles](#design-principles)
 - [Build & quick start](#build--quick-start)
@@ -65,7 +66,7 @@ Two caveats:
 
 ## Config and IR example
 
-The config is written in the DSE engineer's vocabulary—physical structure parameters such as port counts, memory geometry, and subsystem microarchitecture—while simulation priors (calibration state) live in a separate file shared unchanged across design points. The compiler–simulator contract (executor instances, internal links) is projected from these parameters rather than written by hand; `perf --dump-contract` prints it for inspection. See `test/fixtures/target.mlir` and `test/fixtures/prior.mlir` for complete examples.
+The config is written in the DSE engineer's vocabulary—physical structure parameters such as port counts, memory geometry, and subsystem microarchitecture. The compiler–simulator contract (executor instances, internal links) is projected from these parameters rather than written by hand; `perf --dump-contract` prints it for inspection. See `test/fixtures/target.mlir` for a complete example.
 
 ```mlir
 // a minimal design point
@@ -103,6 +104,10 @@ The IR describes how the program executes: where buffers live, which DMA channel
 ```
 
 There are no cycle numbers anywhere in the IR. Perfer derives each instruction's cost from the structural parameters in the config via the cost model, so changing hardware parameters alone never touches the IR. See the spec for the full schedule-attribute syntax.
+
+## Simulation priors (optional)
+
+A design point alone is enough to simulate; the result is the raw structural timing reported as **uncalibrated**. Calibration corrections—produced by aligning the simulator against RTL ground truth (see [Accuracy targets and calibration](#accuracy-targets-and-calibration))—live in a separate prior file that is shared unchanged across all design points of a machine family. Passing `--prior` applies those corrections to the run; the load message states which mode the simulator is in, so a report always says whether it carries calibration backing. See `test/fixtures/prior.mlir` for an example.
 
 ## Accuracy targets and calibration
 
@@ -163,14 +168,18 @@ Inspect the projected compiler–simulator contract for a design point:
 
 ```bash
 ./build/tools/perf/perf --input=test/fixtures/input.mlir \
-  --target=test/fixtures/target.mlir --prior=test/fixtures/prior.mlir \
-  --dump-contract
+  --target=test/fixtures/target.mlir --dump-contract
 # module { perf.contract_def @systolic_npu_v1 ... }
 ```
 
-Verify a Perf dialect program against a design point and priors:
+Verify a Perf dialect program against a design point (uncalibrated by default, or with priors when calibration data exists):
 
 ```bash
+./build/tools/perf/perf --input=test/fixtures/input.mlir \
+  --target=test/fixtures/target.mlir
+# Loaded design: systolic_npu_v1 (uncalibrated)
+# OK: test/fixtures/input.mlir against test/fixtures/target.mlir
+
 ./build/tools/perf/perf --input=test/fixtures/input.mlir \
   --target=test/fixtures/target.mlir --prior=test/fixtures/prior.mlir
 # Loaded design: systolic_npu_v1 with prior: systolic_npu_base

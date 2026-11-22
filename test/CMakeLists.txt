@@ -26,7 +26,6 @@ function(add_perf_fixture_test name)
     NAME fixture_${name}
     COMMAND perf --input=${PERF_FIXTURE_DIR}/${name}.mlir
                  --target=${PERF_FIXTURE_DIR}/target.mlir
-                 --prior=${PERF_FIXTURE_DIR}/prior.mlir
   )
   set_tests_properties(fixture_${name} PROPERTIES
     PASS_REGULAR_EXPRESSION "OK:")
@@ -44,3 +43,32 @@ function(add_perf_fixture_negative_test name)
 endfunction()
 
 add_perf_fixture_test(input)
+
+# Same positive fixture through the explicit-prior path.
+add_test(
+  NAME fixture_input_with_prior
+  COMMAND perf --input=${PERF_FIXTURE_DIR}/input.mlir
+               --target=${PERF_FIXTURE_DIR}/target.mlir
+               --prior=${PERF_FIXTURE_DIR}/prior.mlir
+)
+set_tests_properties(fixture_input_with_prior PROPERTIES
+  PASS_REGULAR_EXPRESSION "with prior: systolic_npu_base.*OK:")
+add_perf_fixture_negative_test(r1_unknown_kind)
+add_perf_fixture_negative_test(r1_index_range)
+add_perf_fixture_negative_test(r1_unknown_space)
+add_perf_fixture_negative_test(r1_host_access)
+
+# ---------------------------------------------------------------------------
+# --dump-contract: the projected compiler-simulator contract must contain
+# every expected element of the design's executor/link vocabulary.
+# ---------------------------------------------------------------------------
+
+add_test(
+  NAME contract_dump
+  COMMAND perf --input=${PERF_FIXTURE_DIR}/input.mlir
+               --target=${PERF_FIXTURE_DIR}/target.mlir
+               --dump-contract
+)
+set_tests_properties(contract_dump PROPERTIES
+  PASS_REGULAR_EXPRESSION
+    "perf.contract_def @systolic_npu_v1.*executor_family<kind = \"dma_read\".*executor_family<kind = \"dma_write\".*executor_family<kind = \"array\".*link<kind = \"dram_bus\"")
