@@ -26,6 +26,7 @@ function(add_perf_fixture_test name)
     NAME fixture_${name}
     COMMAND perf --input=${PERF_FIXTURE_DIR}/${name}.mlir
                  --target=${PERF_FIXTURE_DIR}/target.mlir
+                 --prior=${PERF_FIXTURE_DIR}/prior.mlir
   )
   set_tests_properties(fixture_${name} PROPERTIES
     PASS_REGULAR_EXPRESSION "OK:")
@@ -36,6 +37,7 @@ function(add_perf_fixture_negative_test name)
     NAME fixture_${name}
     COMMAND perf --input=${PERF_FIXTURE_DIR}/${name}.invalid.mlir
                  --target=${PERF_FIXTURE_DIR}/target.mlir
+                 --prior=${PERF_FIXTURE_DIR}/prior.mlir
   )
   set_tests_properties(fixture_${name} PROPERTIES
     WILL_FAIL TRUE)

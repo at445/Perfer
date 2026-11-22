@@ -22,25 +22,52 @@ protected:
     return parseSourceString<ModuleOp>(text, &context).get();
   }
 
-  TargetAttr getTargetAttr(ModuleOp mod) {
-    return llvm::dyn_cast_if_present<TargetAttr>(
-        mod->getAttr("perf.target"));
+  DesignAttr getDesignAttr(ModuleOp mod) {
+    return llvm::dyn_cast_if_present<DesignAttr>(
+        mod->getAttr("perf.design"));
   }
 
-  FailureOr<TargetModel> buildFromText(StringRef text) {
-    auto mod = parseModule(text);
-    if (!mod)
+  PriorAttr getPriorAttr(ModuleOp mod) {
+    return llvm::dyn_cast_if_present<PriorAttr>(
+        mod->getAttr("perf.prior"));
+  }
+
+  FailureOr<TargetModel> buildFromText(StringRef designText,
+                                       StringRef priorText) {
+    auto designMod = parseModule(designText);
+    if (!designMod)
       return failure();
-    auto attr = getTargetAttr(mod);
-    if (!attr)
+    auto design = getDesignAttr(designMod);
+    if (!design)
       return failure();
-    return TargetModel::build(attr);
+
+    auto priorMod = parseModule(priorText);
+    if (!priorMod)
+      return failure();
+    auto prior = getPriorAttr(priorMod);
+    if (!prior)
+      return failure();
+
+    return TargetModel::build(design, prior);
   }
 };
 
+// Shared prior used by all tests.
+static constexpr const char *kPrior = R"mlir(
+module attributes {perf.prior = #perf.prior<
+  version = 4,
+  target_name = "test_prior",
+  calibration = #perf.calibration<
+    extra_fill_cycles = 0, extra_drain_cycles = 0,
+    extra_preload_cycles = 0, extra_writeback_cycles = 0,
+    host_issue_cycles = 0
+  >
+>} {}
+)mlir";
+
 // Schema v4 baseline config: per-family configs carried inline.
 static constexpr const char *kV4Config = R"mlir(
-module attributes {perf.target = #perf.target<
+module attributes {perf.design = #perf.design<
   version = 4,
   target_name = "test_npu",
   frequency_mhz = 1000,
@@ -58,40 +85,23 @@ module attributes {perf.target = #perf.target<
       port_width_bytes = 64, row_width_bytes = 64
     >
   ],
-  executors = [
-    #perf.executor_family<
-      kind = "dma_read", count = 1, in_order = true, spaces = ["spad", "acc"],
-      config = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
-                         max_outstanding = 8, burst_bytes = 64>
-    >,
-    #perf.executor_family<
-      kind = "dma_write", count = 1, in_order = true, spaces = ["spad", "acc"],
-      config = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
-                         max_outstanding = 8, burst_bytes = 64>
-    >,
-    #perf.executor_family<
-      kind = "array", count = 1, in_order = true, spaces = ["spad", "acc"],
-      config = #perf.array<topology = "systolic",
-                           mesh_rows = 16, mesh_cols = 16,
-                           tile_rows = 1, tile_cols = 1,
-                           pe_latency_cycles = 1,
-                           input_skew = true,
-                           inter_tile_pipelined = true>
-    >
-  ],
-  links = [
-    #perf.link<kind = "dram_bus", count = 1>
-  ],
-  calibration = #perf.calibration<
-    extra_fill_cycles = 0, extra_drain_cycles = 0,
-    extra_preload_cycles = 0, extra_writeback_cycles = 0,
-    host_issue_cycles = 0
-  >
+  dma_read_ports = 1,
+  dma_write_ports = 1,
+  arrays = 1,
+  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
+                          max_outstanding = 8, burst_bytes = 64>,
+  array_uarch = #perf.array<topology = "systolic",
+                            mesh_rows = 16, mesh_cols = 16,
+                            tile_rows = 1, tile_cols = 1,
+                            pe_latency_cycles = 1,
+                            input_skew = true,
+                            inter_tile_pipelined = true>,
+  share_dram_bus = true
 >} {}
 )mlir";
 
 TEST_F(TargetModelTest, BuildFromAttr) {
-  auto result = buildFromText(kV4Config);
+  auto result = buildFromText(kV4Config, kPrior);
   ASSERT_TRUE(succeeded(result));
   const auto &model = *result;
 
@@ -128,7 +138,7 @@ TEST_F(TargetModelTest, BuildFromAttr) {
 }
 
 TEST_F(TargetModelTest, PerFamilyConfig) {
-  auto result = buildFromText(kV4Config);
+  auto result = buildFromText(kV4Config, kPrior);
   ASSERT_TRUE(succeeded(result));
   const auto &model = *result;
 
@@ -160,7 +170,7 @@ TEST_F(TargetModelTest, PerFamilyConfig) {
 }
 
 TEST_F(TargetModelTest, ExecutorConnectivity) {
-  auto result = buildFromText(kV4Config);
+  auto result = buildFromText(kV4Config, kPrior);
   ASSERT_TRUE(succeeded(result));
   const auto &model = *result;
 
@@ -194,7 +204,7 @@ TEST_F(TargetModelTest, DmaDerivedMethods) {
 
 TEST_F(TargetModelTest, FindExecutor) {
   const char *text = R"mlir(
-module attributes {perf.target = #perf.target<
+module attributes {perf.design = #perf.design<
   version = 4,
   target_name = "test",
   frequency_mhz = 1000,
@@ -206,33 +216,22 @@ module attributes {perf.target = #perf.target<
       port_width_bytes = 16, row_width_bytes = 16
     >
   ],
-  executors = [
-    #perf.executor_family<
-      kind = "dma_read", count = 2, in_order = true, spaces = ["spad"],
-      config = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
-                         max_outstanding = 8, burst_bytes = 64>
-    >,
-    #perf.executor_family<
-      kind = "array", count = 4, in_order = true, spaces = ["spad"],
-      config = #perf.array<topology = "systolic",
-                           mesh_rows = 16, mesh_cols = 16,
-                           tile_rows = 2, tile_cols = 2,
-                           pe_latency_cycles = 1,
-                           input_skew = true,
-                           inter_tile_pipelined = true>
-    >
-  ],
-  links = [
-  ],
-  calibration = #perf.calibration<
-    extra_fill_cycles = 0, extra_drain_cycles = 0,
-    extra_preload_cycles = 0, extra_writeback_cycles = 0,
-    host_issue_cycles = 0
-  >
+  dma_read_ports = 2,
+  dma_write_ports = 0,
+  arrays = 4,
+  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
+                          max_outstanding = 8, burst_bytes = 64>,
+  array_uarch = #perf.array<topology = "systolic",
+                            mesh_rows = 16, mesh_cols = 16,
+                            tile_rows = 2, tile_cols = 2,
+                            pe_latency_cycles = 1,
+                            input_skew = true,
+                            inter_tile_pipelined = true>,
+  share_dram_bus = false
 >} {}
 )mlir";
 
-  auto result = buildFromText(text);
+  auto result = buildFromText(text, kPrior);
   ASSERT_TRUE(succeeded(result));
   const auto &model = *result;
 
@@ -262,7 +261,7 @@ module attributes {perf.target = #perf.target<
 
 TEST_F(TargetModelTest, RejectsDuplicateSpaceNames) {
   const char *text = R"mlir(
-module attributes {perf.target = #perf.target<
+module attributes {perf.design = #perf.design<
   version = 4,
   target_name = "test",
   frequency_mhz = 1000,
@@ -280,152 +279,21 @@ module attributes {perf.target = #perf.target<
       port_width_bytes = 64, row_width_bytes = 64
     >
   ],
-  executors = [
-    #perf.executor_family<
-      kind = "array", count = 1, in_order = true, spaces = ["spad"],
-      config = #perf.array<topology = "systolic",
-                           mesh_rows = 16, mesh_cols = 16,
-                           tile_rows = 1, tile_cols = 1,
-                           pe_latency_cycles = 1,
-                           input_skew = true,
-                           inter_tile_pipelined = true>
-    >
-  ],
-  links = [
-  ],
-  calibration = #perf.calibration<
-    extra_fill_cycles = 0, extra_drain_cycles = 0,
-    extra_preload_cycles = 0, extra_writeback_cycles = 0,
-    host_issue_cycles = 0
-  >
+  dma_read_ports = 0,
+  dma_write_ports = 0,
+  arrays = 1,
+  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
+                          max_outstanding = 8, burst_bytes = 64>,
+  array_uarch = #perf.array<topology = "systolic",
+                            mesh_rows = 16, mesh_cols = 16,
+                            tile_rows = 1, tile_cols = 1,
+                            pe_latency_cycles = 1,
+                            input_skew = true,
+                            inter_tile_pipelined = true>,
+  share_dram_bus = false
 >} {}
 )mlir";
 
-  auto result = buildFromText(text);
-  EXPECT_TRUE(failed(result));
-}
-
-TEST_F(TargetModelTest, RejectsUndeclaredSpaceReference) {
-  const char *text = R"mlir(
-module attributes {perf.target = #perf.target<
-  version = 4,
-  target_name = "test",
-  frequency_mhz = 1000,
-  memory_spaces = [
-    #perf.memspace<
-      name = "spad",
-      capacity_kib = 256, banks = 4,
-      read_ports = 4, write_ports = 4,
-      port_width_bytes = 16, row_width_bytes = 16
-    >
-  ],
-  executors = [
-    #perf.executor_family<
-      kind = "array", count = 1, in_order = true,
-      spaces = ["spad", "typo_space"],
-      config = #perf.array<topology = "systolic",
-                           mesh_rows = 16, mesh_cols = 16,
-                           tile_rows = 1, tile_cols = 1,
-                           pe_latency_cycles = 1,
-                           input_skew = true,
-                           inter_tile_pipelined = true>
-    >
-  ],
-  links = [
-  ],
-  calibration = #perf.calibration<
-    extra_fill_cycles = 0, extra_drain_cycles = 0,
-    extra_preload_cycles = 0, extra_writeback_cycles = 0,
-    host_issue_cycles = 0
-  >
->} {}
-)mlir";
-
-  auto result = buildFromText(text);
-  EXPECT_TRUE(failed(result));
-}
-
-TEST_F(TargetModelTest, RejectsUnsupportedConfigType) {
-  const char *text = R"mlir(
-module attributes {perf.target = #perf.target<
-  version = 4,
-  target_name = "test",
-  frequency_mhz = 1000,
-  memory_spaces = [
-    #perf.memspace<
-      name = "spad",
-      capacity_kib = 256, banks = 4,
-      read_ports = 4, write_ports = 4,
-      port_width_bytes = 16, row_width_bytes = 16
-    >
-  ],
-  executors = [
-    #perf.executor_family<
-      kind = "array", count = 1, in_order = true, spaces = ["spad"],
-      config = #perf.calibration<extra_fill_cycles = 0, extra_drain_cycles = 0,
-                                 extra_preload_cycles = 0,
-                                 extra_writeback_cycles = 0,
-                                 host_issue_cycles = 0>
-    >
-  ],
-  links = [
-  ],
-  calibration = #perf.calibration<
-    extra_fill_cycles = 0, extra_drain_cycles = 0,
-    extra_preload_cycles = 0, extra_writeback_cycles = 0,
-    host_issue_cycles = 0
-  >
->} {}
-)mlir";
-
-  auto result = buildFromText(text);
-  EXPECT_TRUE(failed(result));
-}
-
-TEST_F(TargetModelTest, RejectsDuplicateExecutorKinds) {
-  const char *text = R"mlir(
-module attributes {perf.target = #perf.target<
-  version = 4,
-  target_name = "test",
-  frequency_mhz = 1000,
-  memory_spaces = [
-    #perf.memspace<
-      name = "spad",
-      capacity_kib = 256, banks = 4,
-      read_ports = 4, write_ports = 4,
-      port_width_bytes = 16, row_width_bytes = 16
-    >
-  ],
-  executors = [
-    #perf.executor_family<
-      kind = "array", count = 1, in_order = true, spaces = ["spad"],
-      config = #perf.array<topology = "systolic",
-                           mesh_rows = 16, mesh_cols = 16,
-                           tile_rows = 1, tile_cols = 1,
-                           pe_latency_cycles = 1,
-                           input_skew = true,
-                           inter_tile_pipelined = true>
-    >,
-    #perf.executor_family<
-      kind = "array", count = 1, in_order = true, spaces = ["spad"],
-      config = #perf.array<topology = "systolic",
-                           mesh_rows = 8, mesh_cols = 8,
-                           tile_rows = 1, tile_cols = 1,
-                           pe_latency_cycles = 1,
-                           input_skew = true,
-                           inter_tile_pipelined = true>
-    >
-  ],
-  links = [
-  ],
-  calibration = #perf.calibration<
-    extra_fill_cycles = 0, extra_drain_cycles = 0,
-    extra_preload_cycles = 0, extra_writeback_cycles = 0,
-    host_issue_cycles = 0
-  >
->} {}
-)mlir";
-
-  auto result = buildFromText(text);
+  auto result = buildFromText(text, kPrior);
   EXPECT_TRUE(failed(result));
 }

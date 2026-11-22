@@ -5,6 +5,9 @@
 
 #include "perf/Dialect/PerfAttrs.h"
 
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/OwningOpRef.h"
+
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/LogicalResult.h"
 
@@ -93,9 +96,16 @@ struct LinkInstance {
 
 class TargetModel {
 public:
-  static llvm::FailureOr<TargetModel> build(perf::TargetAttr attr);
+  static llvm::FailureOr<TargetModel> build(perf::DesignAttr design,
+                                            perf::PriorAttr prior);
 
-  perf::TargetAttr getAttr() const { return attr_; }
+  perf::DesignAttr getDesignAttr() const { return designAttr_; }
+  perf::PriorAttr getPriorAttr() const { return priorAttr_; }
+
+  // Re-emit the compiler-simulator contract as a standalone MLIR module
+  // containing a perf.contract_def, for inspection/traceability.
+  mlir::OwningOpRef<mlir::ModuleOp> materializeContract(
+      mlir::MLIRContext &context) const;
 
   llvm::ArrayRef<MemSpaceConfig> memSpaces() const { return memSpaces_; }
   const MemSpaceConfig *findMemSpace(llvm::StringRef name) const;
@@ -120,9 +130,11 @@ public:
   bool executorCanReach(llvm::StringRef kind, llvm::StringRef space) const;
 
 private:
-  explicit TargetModel(perf::TargetAttr attr) : attr_(attr) {}
+  explicit TargetModel(perf::DesignAttr design, perf::PriorAttr prior)
+      : designAttr_(design), priorAttr_(prior) {}
 
-  perf::TargetAttr attr_;
+  perf::DesignAttr designAttr_;
+  perf::PriorAttr priorAttr_;
   llvm::SmallVector<MemSpaceConfig> memSpaces_;
   llvm::SmallVector<ExecutorFamilyModel> families_;
   llvm::SmallVector<ExecutorInstance> executors_;

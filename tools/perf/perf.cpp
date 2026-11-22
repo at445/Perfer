@@ -29,12 +29,21 @@ static llvm::cl::opt<std::string> inputFilename(
     llvm::cl::value_desc("program.mlir"), llvm::cl::Required);
 
 static llvm::cl::opt<std::string> targetFilename(
-    "target", llvm::cl::desc("Target config MLIR file"),
-    llvm::cl::value_desc("target.mlir"), llvm::cl::Required);
+    "target", llvm::cl::desc("Target design MLIR file (perf.target_def)"),
+    llvm::cl::value_desc("design.mlir"), llvm::cl::Required);
+
+static llvm::cl::opt<std::string> priorFilename(
+    "prior", llvm::cl::desc("Simulation prior MLIR file (perf.prior_def)"),
+    llvm::cl::value_desc("prior.mlir"), llvm::cl::Required);
 
 static llvm::cl::opt<std::string> outputFilename(
     "o", llvm::cl::desc("Output filename ('-' for stdout)"),
     llvm::cl::value_desc("filename"), llvm::cl::init("-"));
+
+static llvm::cl::opt<bool> dumpContract(
+    "dump-contract",
+    llvm::cl::desc("Print the materialized compiler-simulator contract and exit"),
+    llvm::cl::init(false));
 
 //===----------------------------------------------------------------------===//
 // Parse helpers
@@ -68,34 +77,55 @@ static OwningOpRef<ModuleOp> parseModuleFile(StringRef filename,
 }
 
 //===----------------------------------------------------------------------===//
-// Target loading
+// Config loading
 //===----------------------------------------------------------------------===//
 
-static llvm::FailureOr<perf::TargetModel> loadTarget(StringRef filename,
-                                                      MLIRContext &context) {
-  auto mod = parseModuleFile(filename, context);
-  if (!mod)
-    return failure();
-
-  // Expect a single perf.target_def op at top level.
-  perf::TargetDefOp targetDef;
-  for (auto &op : mod->getBody()->getOperations()) {
-    if (auto td = dyn_cast<perf::TargetDefOp>(&op)) {
-      if (targetDef) {
-        llvm::errs() << "error: multiple perf.target_def ops in " << filename << "\n";
+// Find the unique top-level op of type OpTy in a module.
+template <typename OpTy>
+static llvm::FailureOr<OpTy> findSingleTopLevel(ModuleOp mod,
+                                                llvm::StringRef filename) {
+  OpTy result;
+  for (auto &op : mod.getBody()->getOperations()) {
+    if (auto match = dyn_cast<OpTy>(&op)) {
+      if (result) {
+        llvm::errs() << "error: multiple " << OpTy::getOperationName()
+                     << " ops in " << filename << "\n";
         return failure();
       }
-      targetDef = td;
+      result = match;
     }
   }
-  if (!targetDef) {
-    llvm::errs() << "error: no perf.target_def found in " << filename << "\n";
+  if (!result) {
+    llvm::errs() << "error: no " << OpTy::getOperationName() << " found in "
+                 << filename << "\n";
     return failure();
   }
+  return result;
+}
 
-  auto modelOr = perf::TargetModel::build(targetDef.getConfig());
+static llvm::FailureOr<perf::TargetModel> loadConfig(
+    llvm::StringRef designFile, llvm::StringRef priorFile,
+    MLIRContext &context) {
+  auto designMod = parseModuleFile(designFile, context);
+  if (!designMod)
+    return failure();
+  auto targetDef = findSingleTopLevel<perf::TargetDefOp>(*designMod,
+                                                         designFile);
+  if (failed(targetDef))
+    return failure();
+
+  auto priorMod = parseModuleFile(priorFile, context);
+  if (!priorMod)
+    return failure();
+  auto priorDef = findSingleTopLevel<perf::PriorDefOp>(*priorMod, priorFile);
+  if (failed(priorDef))
+    return failure();
+
+  auto modelOr = perf::TargetModel::build(targetDef->getConfig(),
+                                          priorDef->getConfig());
   if (failed(modelOr)) {
-    llvm::errs() << "error: failed to build TargetModel from " << filename << "\n";
+    llvm::errs() << "error: failed to build TargetModel from " << designFile
+                 << " + " << priorFile << "\n";
     return failure();
   }
   return modelOr;
@@ -115,13 +145,22 @@ int main(int argc, char **argv) {
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  // Load target config
-  auto targetOr = loadTarget(targetFilename, context);
+  // Load design + prior configs
+  auto targetOr = loadConfig(targetFilename, priorFilename, context);
   if (failed(targetOr))
     return 1;
   auto target = std::move(*targetOr);
 
-  llvm::outs() << "Loaded target: " << target.getAttr().getTargetName() << "\n";
+  llvm::outs() << "Loaded design: " << target.getDesignAttr().getTargetName()
+               << " with prior: " << target.getPriorAttr().getTargetName()
+               << "\n";
+
+  if (dumpContract) {
+    auto contractMod = target.materializeContract(context);
+    contractMod->print(llvm::outs());
+    llvm::outs() << "\n";
+    return 0;
+  }
 
   // Parse program
   auto mod = parseModuleFile(inputFilename, context);
