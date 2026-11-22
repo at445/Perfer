@@ -15,12 +15,13 @@ class Perf_AttrDef<string name> : AttrDef<PerfDialect, name>;
 
 def Perf_SpaceAttr : Perf_AttrDef<"Space"> {
   let mnemonic = "space";
-  let summary = "On-chip memory space reference: (space name, bank index).";
+  let summary = "On-chip memory space reference: (space name, base_row, rows).";
   let parameters = (ins
     StringRefParameter<"space name: spad | acc | ...">:$name,
-    "int64_t":$bank
+    "int64_t":$base_row,
+    "int64_t":$rows
   );
-  let assemblyFormat = "`<` $name `,` $bank `>`";
+  let assemblyFormat = "`<` $name `,` $base_row `,` $rows `>`";
 }
 
 def Perf_ResRefAttr : Perf_AttrDef<"ResRef"> {

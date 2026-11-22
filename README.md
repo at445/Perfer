@@ -84,8 +84,8 @@ The IR describes how the program executes: where buffers live, which DMA channel
 ```mlir
 // fragment: definitions of %A, %buf_b, %acc_c and prior tokens %f0, %p0 omitted
 
-// allocate a buffer in scratchpad instance 0 (N in space<spad, N> is the memory-instance index)
-%buf_a = perf.alloc : memref<512xi8, #perf.space<spad, 0>>
+// allocate a 32-row buffer starting at row 0 of scratchpad (space<spad, base_row, rows>)
+%buf_a = perf.alloc : memref<512xi8, #perf.space<spad, 0, 32>>
 
 // async DMA: issued after %f0 completes, uses read channel 0
 %t0 = perf.dma_load %A, %buf_a [%f0]
