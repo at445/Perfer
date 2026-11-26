@@ -1,0 +1,65 @@
+{
+  "version": 5,
+  "target_name": "systolic_npu_v1",
+  "frequency_mhz": 1000,
+  "entities": [
+    {
+      "id": "dram0",
+      "type": "dram",
+      "attrs": { "channels": 1, "bytes_per_cycle": 16 }
+    },
+    {
+      "id": "spad",
+      "type": "sram",
+      "attrs": {
+        "capacity_kib": 256, "banks": 4,
+        "read_ports": 4, "write_ports": 4,
+        "port_width_bytes": 16, "row_width_bytes": 16,
+        "interleave": "low"
+      }
+    },
+    {
+      "id": "acc",
+      "type": "sram",
+      "attrs": {
+        "capacity_kib": 64, "banks": 4,
+        "read_ports": 1, "write_ports": 1,
+        "port_width_bytes": 64, "row_width_bytes": 64,
+        "interleave": "low"
+      }
+    },
+    {
+      "id": "array0",
+      "type": "array",
+      "attrs": {
+        "topology": "systolic",
+        "mesh_rows": 16, "mesh_cols": 16,
+        "tile_rows": 1, "tile_cols": 1,
+        "pe_latency_cycles": 1,
+        "input_skew": true,
+        "inter_tile_pipelined": true,
+        "acc_read_scale_cycles": 2,
+        "acc_read_act_cycles": 1
+      }
+    },
+    {
+      "id": "dma0",
+      "type": "dma",
+      "attrs": {
+        "read_ports": 1,
+        "write_ports": 1,
+        "fixed_latency_cycles": 20,
+        "max_outstanding": 8,
+        "burst_bytes": 64
+      }
+    }
+  ],
+  "links": [
+    { "from": "dma0", "to": "dram0", "type": "dram_bus",
+      "attrs": { "arbiter": "fifo" } },
+    { "from": "dma0", "to": "spad", "type": "port", "attrs": {} },
+    { "from": "dma0", "to": "acc",  "type": "port", "attrs": {} },
+    { "from": "array0", "to": "spad", "type": "port", "attrs": {} },
+    { "from": "array0", "to": "acc",  "type": "port", "attrs": {} }
+  ]
+}

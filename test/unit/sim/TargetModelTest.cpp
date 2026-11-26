@@ -22,9 +22,9 @@ protected:
     return parseSourceString<ModuleOp>(text, &context).get();
   }
 
-  DesignAttr getDesignAttr(ModuleOp mod) {
-    return llvm::dyn_cast_if_present<DesignAttr>(
-        mod->getAttr("perf.design"));
+  TargetAttr getTargetAttr(ModuleOp mod) {
+    return llvm::dyn_cast_if_present<TargetAttr>(
+        mod->getAttr("perf.target"));
   }
 
   PriorAttr getPriorAttr(ModuleOp mod) {
@@ -32,13 +32,13 @@ protected:
         mod->getAttr("perf.prior"));
   }
 
-  FailureOr<TargetModel> buildFromText(StringRef designText,
+  FailureOr<TargetModel> buildFromText(StringRef targetText,
                                        StringRef priorText) {
-    auto designMod = parseModule(designText);
-    if (!designMod)
+    auto targetMod = parseModule(targetText);
+    if (!targetMod)
       return failure();
-    auto design = getDesignAttr(designMod);
-    if (!design)
+    auto target = getTargetAttr(targetMod);
+    if (!target)
       return failure();
 
     auto priorMod = parseModule(priorText);
@@ -48,7 +48,7 @@ protected:
     if (!prior)
       return failure();
 
-    return TargetModel::build(design, prior);
+    return TargetModel::build(target, prior);
   }
 };
 
@@ -65,38 +65,57 @@ module attributes {perf.prior = #perf.prior<
 >} {}
 )mlir";
 
-// Schema v4 baseline config: per-family configs carried inline.
+// Flat #perf.target baseline config: per-family configs carried inline.
 static constexpr const char *kV4Config = R"mlir(
-module attributes {perf.design = #perf.design<
+module attributes {perf.target = #perf.target<
   version = 4,
   target_name = "test_npu",
   frequency_mhz = 1000,
   memory_spaces = [
-    #perf.memspace<
+    #perf.sram<
       name = "spad",
       capacity_kib = 256, banks = 4,
       read_ports = 4, write_ports = 4,
-      port_width_bytes = 16, row_width_bytes = 16
+      port_width_bytes = 16, row_width_bytes = 16, interleave = "low"
     >,
-    #perf.memspace<
+    #perf.sram<
       name = "acc",
       capacity_kib = 64, banks = 4,
       read_ports = 1, write_ports = 1,
-      port_width_bytes = 64, row_width_bytes = 64
+      port_width_bytes = 64, row_width_bytes = 64, interleave = "low"
     >
   ],
-  dma_read_ports = 1,
-  dma_write_ports = 1,
-  arrays = 1,
-  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
-                          max_outstanding = 8, burst_bytes = 64>,
-  array_uarch = #perf.array<topology = "systolic",
-                            mesh_rows = 16, mesh_cols = 16,
-                            tile_rows = 1, tile_cols = 1,
-                            pe_latency_cycles = 1,
-                            input_skew = true,
-                            inter_tile_pipelined = true>,
-  share_dram_bus = true
+  executors = [
+    #perf.executor<
+      kind = "dma_read", count = 1,
+      spaces = ["spad", "acc"],
+      config = #perf.dma<read_ports = 1, write_ports = 1,
+                         fixed_latency_cycles = 20,
+                         max_outstanding = 8, burst_bytes = 64>
+    >,
+    #perf.executor<
+      kind = "dma_write", count = 1,
+      spaces = ["spad", "acc"],
+      config = #perf.dma<read_ports = 1, write_ports = 1,
+                         fixed_latency_cycles = 20,
+                         max_outstanding = 8, burst_bytes = 64>
+    >,
+    #perf.executor<
+      kind = "array", count = 1,
+      spaces = ["spad", "acc"],
+      config = #perf.array<topology = "systolic",
+                           mesh_rows = 16, mesh_cols = 16,
+                           tile_rows = 1, tile_cols = 1,
+                           pe_latency_cycles = 1,
+                           input_skew = true,
+                           inter_tile_pipelined = true,
+                           acc_read_scale_cycles = 2,
+                           acc_read_act_cycles = 1>
+    >
+  ],
+  links = [
+    #perf.link<kind = "dram_bus", count = 1, bytes_per_cycle = 16>
+  ]
 >} {}
 )mlir";
 
@@ -126,7 +145,7 @@ TEST_F(TargetModelTest, BuildFromAttr) {
 
   EXPECT_EQ(model.findMemSpace("nonexistent"), nullptr);
 
-  // Executor instances (expanded from families).
+  // Executor instances (expanded from the executor entries).
   EXPECT_EQ(model.executors().size(), 3u);
   EXPECT_EQ(model.executors()[0].name(), "dma_read#0");
   EXPECT_EQ(model.executors()[1].name(), "dma_write#0");
@@ -142,10 +161,10 @@ TEST_F(TargetModelTest, PerFamilyConfig) {
   ASSERT_TRUE(succeeded(result));
   const auto &model = *result;
 
-  // DMA families carry their own dma config.
+  // DMA instances carry their engine-intrinsic config (bandwidth lives on
+  // the dram_bus link, not the engine).
   const auto *readDma = model.dmaConfig("dma_read");
   ASSERT_NE(readDma, nullptr);
-  EXPECT_EQ(readDma->busBytesPerCycle, 16);
   EXPECT_EQ(readDma->fixedLatencyCycles, 20);
   EXPECT_EQ(readDma->maxOutstanding, 8);
   EXPECT_EQ(readDma->burstBytes, 64);
@@ -158,7 +177,7 @@ TEST_F(TargetModelTest, PerFamilyConfig) {
   EXPECT_EQ(model.arrayConfig("dma_read"), nullptr);
   EXPECT_EQ(model.dmaConfig("nonexistent"), nullptr);
 
-  // Array family config.
+  // Array config, including the acc read-out epilogue fields.
   const auto *array = model.arrayConfig("array");
   ASSERT_NE(array, nullptr);
   EXPECT_EQ(array->topology, "systolic");
@@ -166,7 +185,12 @@ TEST_F(TargetModelTest, PerFamilyConfig) {
   EXPECT_EQ(array->meshCols, 16);
   EXPECT_TRUE(array->inputSkew);
   EXPECT_TRUE(array->interTilePipelined);
+  EXPECT_EQ(array->accReadScaleCycles, 2);
+  EXPECT_EQ(array->accReadActCycles, 1);
   EXPECT_EQ(array->numArrayInstances(), 1);
+
+  // DRAM channel bandwidth is looked up from the dram_bus link.
+  EXPECT_EQ(model.dramBytesPerCycle(), 16);
 }
 
 TEST_F(TargetModelTest, ExecutorConnectivity) {
@@ -187,47 +211,60 @@ TEST_F(TargetModelTest, ExecutorConnectivity) {
 
 TEST_F(TargetModelTest, DmaDerivedMethods) {
   DmaConfig dma{
-      .busBytesPerCycle = 16,
+      .readPorts = 1,
+      .writePorts = 1,
       .fixedLatencyCycles = 20,
       .maxOutstanding = 8,
       .burstBytes = 64,
   };
+  // Transfer bandwidth comes from the dram link the engine's ports share.
+  const int64_t bw = 16;
 
-  EXPECT_EQ(dma.transferCycles(512), 32);
-  EXPECT_EQ(dma.transferCycles(1), 1);
-  EXPECT_EQ(dma.transferCycles(16), 1);
-  EXPECT_EQ(dma.transferCycles(17), 2);
+  EXPECT_EQ(dma.transferCycles(512, bw), 32);
+  EXPECT_EQ(dma.transferCycles(1, bw), 1);
+  EXPECT_EQ(dma.transferCycles(16, bw), 1);
+  EXPECT_EQ(dma.transferCycles(17, bw), 2);
 
-  EXPECT_EQ(dma.totalLatency(512), 52);
-  EXPECT_EQ(dma.totalLatency(0), 20);
+  EXPECT_EQ(dma.totalLatency(512, bw), 52);
+  EXPECT_EQ(dma.totalLatency(0, bw), 20);
 }
 
 TEST_F(TargetModelTest, FindExecutor) {
   const char *text = R"mlir(
-module attributes {perf.design = #perf.design<
+module attributes {perf.target = #perf.target<
   version = 4,
   target_name = "test",
   frequency_mhz = 1000,
   memory_spaces = [
-    #perf.memspace<
+    #perf.sram<
       name = "spad",
       capacity_kib = 256, banks = 4,
       read_ports = 4, write_ports = 4,
-      port_width_bytes = 16, row_width_bytes = 16
+      port_width_bytes = 16, row_width_bytes = 16, interleave = "low"
     >
   ],
-  dma_read_ports = 2,
-  dma_write_ports = 0,
-  arrays = 4,
-  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
-                          max_outstanding = 8, burst_bytes = 64>,
-  array_uarch = #perf.array<topology = "systolic",
-                            mesh_rows = 16, mesh_cols = 16,
-                            tile_rows = 2, tile_cols = 2,
-                            pe_latency_cycles = 1,
-                            input_skew = true,
-                            inter_tile_pipelined = true>,
-  share_dram_bus = false
+  executors = [
+    #perf.executor<
+      kind = "dma_read", count = 2,
+      spaces = ["spad"],
+      config = #perf.dma<read_ports = 2, write_ports = 0,
+                         fixed_latency_cycles = 20,
+                         max_outstanding = 8, burst_bytes = 64>
+    >,
+    #perf.executor<
+      kind = "array", count = 4,
+      spaces = ["spad"],
+      config = #perf.array<topology = "systolic",
+                           mesh_rows = 16, mesh_cols = 16,
+                           tile_rows = 2, tile_cols = 2,
+                           pe_latency_cycles = 1,
+                           input_skew = true,
+                           inter_tile_pipelined = true,
+                           acc_read_scale_cycles = 0,
+                           acc_read_act_cycles = 0>
+    >
+  ],
+  links = []
 >} {}
 )mlir";
 
@@ -250,10 +287,10 @@ module attributes {perf.design = #perf.design<
   EXPECT_EQ(inst->kind, "array");
   EXPECT_EQ(inst->index, 3);
 
-  // Array instances point back to their family's config.
-  const auto *arrayFam = model.findFamily("array");
-  ASSERT_NE(arrayFam, nullptr);
-  EXPECT_EQ(arrayFam->arrayConfig->numArrayInstances(), 4);
+  // Array instances carry their own array config.
+  const auto *arrayCfg = model.arrayConfig("array");
+  ASSERT_NE(arrayCfg, nullptr);
+  EXPECT_EQ(arrayCfg->numArrayInstances(), 4);
 
   EXPECT_EQ(model.findExecutor("nonexistent", 0), nullptr);
   EXPECT_EQ(model.findExecutor("dma_read#99"), nullptr);
@@ -261,36 +298,39 @@ module attributes {perf.design = #perf.design<
 
 TEST_F(TargetModelTest, RejectsDuplicateSpaceNames) {
   const char *text = R"mlir(
-module attributes {perf.design = #perf.design<
+module attributes {perf.target = #perf.target<
   version = 4,
   target_name = "test",
   frequency_mhz = 1000,
   memory_spaces = [
-    #perf.memspace<
+    #perf.sram<
       name = "spad",
       capacity_kib = 256, banks = 4,
       read_ports = 4, write_ports = 4,
-      port_width_bytes = 16, row_width_bytes = 16
+      port_width_bytes = 16, row_width_bytes = 16, interleave = "low"
     >,
-    #perf.memspace<
+    #perf.sram<
       name = "spad",
       capacity_kib = 64, banks = 4,
       read_ports = 1, write_ports = 1,
-      port_width_bytes = 64, row_width_bytes = 64
+      port_width_bytes = 64, row_width_bytes = 64, interleave = "low"
     >
   ],
-  dma_read_ports = 0,
-  dma_write_ports = 0,
-  arrays = 1,
-  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, fixed_latency_cycles = 20,
-                          max_outstanding = 8, burst_bytes = 64>,
-  array_uarch = #perf.array<topology = "systolic",
-                            mesh_rows = 16, mesh_cols = 16,
-                            tile_rows = 1, tile_cols = 1,
-                            pe_latency_cycles = 1,
-                            input_skew = true,
-                            inter_tile_pipelined = true>,
-  share_dram_bus = false
+  executors = [
+    #perf.executor<
+      kind = "array", count = 1,
+      spaces = ["spad"],
+      config = #perf.array<topology = "systolic",
+                           mesh_rows = 16, mesh_cols = 16,
+                           tile_rows = 1, tile_cols = 1,
+                           pe_latency_cycles = 1,
+                           input_skew = true,
+                           inter_tile_pipelined = true,
+                           acc_read_scale_cycles = 0,
+                           acc_read_act_cycles = 0>
+    >
+  ],
+  links = []
 >} {}
 )mlir";
 

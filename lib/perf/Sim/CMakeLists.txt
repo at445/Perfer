@@ -1,6 +1,7 @@
 add_mlir_library(MLIRPerfSim
   DependencyGraph.cpp
   ExecutionView.cpp
+  JsonConfig.cpp
   ScheduleView.cpp
   TargetModel.cpp
 

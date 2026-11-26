@@ -53,19 +53,19 @@ class Perf_MemEffectOp<string mnemonic, list<Trait> traits = []> :
 //===----------------------------------------------------------------------===//
 
 def Perf_TargetDefOp : Perf_Op<"target_def", [Symbol, NoMemoryEffect]> {
-  let summary = "Top-level hardware design-point definition (DSE-visible config).";
+  let summary = "Simulator-level hardware target definition.";
   let description = [{
-    A top-level declaration of a hardware design point: the parameters a
-    DSE sweep varies (memory spaces, executor families, links, frequency).
-    Simulation priors live in a separate perf.prior_def so sweeps never
-    fork the prior state.
+    The simulator-level hardware target: the executor/link vocabulary the
+    simulator consumes directly, with the physical parameters of each
+    resource. Produced from an architect-level config.json by
+    `perf --config ... --dump-target`; read back by `--target`.
 
     Example:
-      perf.target_def @systolic_npu_v1 #perf.design<...>
+      perf.target_def @systolic_npu_v1 #perf.target<...>
   }];
   let arguments = (ins
     SymbolNameAttr:$sym_name,
-    Perf_DesignAttr:$config
+    Perf_TargetAttr:$config
   );
   let assemblyFormat = "$sym_name $config attr-dict";
   let hasVerifier = 1;
@@ -88,29 +88,6 @@ def Perf_PriorDefOp : Perf_Op<"prior_def", [Symbol, NoMemoryEffect]> {
   let arguments = (ins
     SymbolNameAttr:$sym_name,
     Perf_PriorAttr:$config
-  );
-  let assemblyFormat = "$sym_name $config attr-dict";
-  let hasVerifier = 1;
-}
-
-//===----------------------------------------------------------------------===//
-// perf.contract_def
-//===----------------------------------------------------------------------===//
-
-def Perf_ContractDefOp : Perf_Op<"contract_def", [Symbol, NoMemoryEffect]> {
-  let summary = "Materialized compiler-simulator contract (generated, never hand-written).";
-  let description = [{
-    The executor-level contract projected from a perf.target_def design
-    point. Emitted by `perf --dump-contract` so that both the compiler
-    (which must place #perf.res references) and the simulator consume the
-    same explicit vocabulary.
-
-    Example:
-      perf.contract_def @systolic_npu_v1 #perf.contract<...>
-  }];
-  let arguments = (ins
-    SymbolNameAttr:$sym_name,
-    Perf_ContractAttr:$config
   );
   let assemblyFormat = "$sym_name $config attr-dict";
   let hasVerifier = 1;

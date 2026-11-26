@@ -21,14 +21,20 @@ namespace perf {
 // Config structs (snapshots, not live views)
 //===----------------------------------------------------------------------===//
 
+// DMA engine-intrinsic parameters plus its read/write port counts. The
+// transfer bandwidth is NOT here: it belongs to the shared DRAM channel
+// (DramConfig / the dram_bus link), the source of transfer nominal.
 struct DmaConfig {
-  int64_t busBytesPerCycle;
+  int64_t readPorts;
+  int64_t writePorts;
   int64_t fixedLatencyCycles;
   int64_t maxOutstanding;
   int64_t burstBytes;
 
-  int64_t transferCycles(int64_t bytes) const;
-  int64_t totalLatency(int64_t bytes) const;
+  // Transfer cycles need the channel bandwidth, supplied by the caller from
+  // the dram link the engine's ports share.
+  int64_t transferCycles(int64_t bytes, int64_t bytesPerCycle) const;
+  int64_t totalLatency(int64_t bytes, int64_t bytesPerCycle) const;
 };
 
 struct ArrayConfig {
@@ -40,11 +46,19 @@ struct ArrayConfig {
   int64_t peLatencyCycles;
   bool inputSkew;
   bool interTilePipelined;
+  // Gemmini acc read-out epilogue (scale + activation) pipeline stages.
+  int64_t accReadScaleCycles;
+  int64_t accReadActCycles;
 
   int64_t numArrayInstances() const;
 };
 
-struct MemSpaceConfig {
+// The geometry and row-to-bank mapping of one on-chip SRAM space. This is a
+// parameter source: R1 bounds checks use rowsPerBank/totalRows, and the
+// simulator's demand generation uses banks/interleave to map a #perf.space
+// access onto per-bank contention ports. Per-bank ports are derived by the
+// simulator from `banks`; they are not materialized as model objects.
+struct SRAMConfig {
   std::string name;
   int64_t capacityKib;
   int64_t banks;
@@ -52,33 +66,29 @@ struct MemSpaceConfig {
   int64_t writePorts;
   int64_t portWidthBytes;
   int64_t rowWidthBytes;
+  // Row-to-bank interleave policy: "low" (bank = row % banks) or "high"
+  // (bank = row / rowsPerBank). Used by the simulator's demand generation.
+  std::string interleave;
 
   int64_t capacityBytes() const { return capacityKib * 1024; }
   int64_t rowsPerBank() const {
     return capacityBytes() / (banks * rowWidthBytes);
   }
+  int64_t totalRows() const { return banks * rowsPerBank(); }
 };
 
 struct ExecutorInstance {
   std::string kind;
   int64_t index;
-  bool inOrder;
-  int64_t familyIndex;  // index into the family's config entry
-
-  std::string name() const;  // "dma_read#0"
-};
-
-struct ExecutorFamilyModel {
-  std::string kind;
-  int64_t count;
-  bool inOrder;
   llvm::SmallVector<std::string> spaces;  // reachable memory spaces (R1)
 
-  // Family-level microarchitectural config. Exactly one is populated,
-  // according to the family's kind:
+  // Microarchitectural config. Exactly one is populated, according to the
+  // instance's kind:
   //   dma_read / dma_write -> dma,  array -> arrayConfig.
   std::optional<DmaConfig> dma;
   std::optional<ArrayConfig> arrayConfig;
+
+  std::string name() const;  // "dma_read#0"
 
   bool canReach(llvm::StringRef space) const;
 };
@@ -86,6 +96,7 @@ struct ExecutorFamilyModel {
 struct LinkInstance {
   std::string kind;
   int64_t index;
+  int64_t bytesPerCycle;  // per-channel transfer bandwidth
 
   std::string name() const;  // "dram_bus#0"
 };
@@ -94,24 +105,20 @@ struct LinkInstance {
 // TargetModel
 //===----------------------------------------------------------------------===//
 
+// Strongly-typed snapshot of a #perf.target, consumed one-way by the
+// simulator and the verifier rules. The model does not write MLIR back: a
+// malformed target surfaces through the verifier rules (R1, ...), not through
+// any re-serialization here.
 class TargetModel {
 public:
-  static llvm::FailureOr<TargetModel> build(perf::DesignAttr design,
+  // Build from the simulator-level target attribute (#perf.target).
+  static llvm::FailureOr<TargetModel> build(perf::TargetAttr target,
                                             perf::PriorAttr prior);
 
-  perf::DesignAttr getDesignAttr() const { return designAttr_; }
   perf::PriorAttr getPriorAttr() const { return priorAttr_; }
 
-  // Re-emit the compiler-simulator contract as a standalone MLIR module
-  // containing a perf.contract_def, for inspection/traceability.
-  mlir::OwningOpRef<mlir::ModuleOp> materializeContract(
-      mlir::MLIRContext &context) const;
-
-  llvm::ArrayRef<MemSpaceConfig> memSpaces() const { return memSpaces_; }
-  const MemSpaceConfig *findMemSpace(llvm::StringRef name) const;
-
-  llvm::ArrayRef<ExecutorFamilyModel> families() const { return families_; }
-  const ExecutorFamilyModel *findFamily(llvm::StringRef kind) const;
+  llvm::ArrayRef<SRAMConfig> memSpaces() const { return memSpaces_; }
+  const SRAMConfig *findMemSpace(llvm::StringRef name) const;
 
   llvm::ArrayRef<ExecutorInstance> executors() const { return executors_; }
   llvm::ArrayRef<LinkInstance> links() const { return links_; }
@@ -121,22 +128,25 @@ public:
   const ExecutorInstance *findExecutor(llvm::StringRef name) const;
   const LinkInstance *findLink(llvm::StringRef kind, int64_t index) const;
 
-  // Family-level config lookup by executor kind (returns nullptr when the
-  // kind is absent or carries a different config type).
+  // Config lookup by executor kind (returns nullptr when the kind is absent
+  // or carries a different config type). Finds the first instance of kind.
   const DmaConfig *dmaConfig(llvm::StringRef kind) const;
   const ArrayConfig *arrayConfig(llvm::StringRef kind) const;
+
+  // Per-channel bandwidth of the shared dram_bus channel the DMA ports
+  // contend on (the source of DMA transfer nominal). 0 when absent.
+  int64_t dramBytesPerCycle() const;
 
   // R1 connectivity: does executor kind reach the given memory space?
   bool executorCanReach(llvm::StringRef kind, llvm::StringRef space) const;
 
 private:
-  explicit TargetModel(perf::DesignAttr design, perf::PriorAttr prior)
-      : designAttr_(design), priorAttr_(prior) {}
+  explicit TargetModel(perf::TargetAttr target, perf::PriorAttr prior)
+      : targetAttr_(target), priorAttr_(prior) {}
 
-  perf::DesignAttr designAttr_;
+  perf::TargetAttr targetAttr_;
   perf::PriorAttr priorAttr_;
-  llvm::SmallVector<MemSpaceConfig> memSpaces_;
-  llvm::SmallVector<ExecutorFamilyModel> families_;
+  llvm::SmallVector<SRAMConfig> memSpaces_;
   llvm::SmallVector<ExecutorInstance> executors_;
   llvm::SmallVector<LinkInstance> links_;
 };

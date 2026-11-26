@@ -27,18 +27,13 @@ LogicalResult verifyOp(Operation *op, const TargetModel &target) {
   int64_t index = resAttr.getIndex();
 
   // The placement must reference an executor instance that exists in the
-  // contract. Links are not executors, so they are rejected here by
+  // target. Links are not executors, so they are rejected here by
   // construction.
   const ExecutorInstance *inst = target.findExecutor(kind, index);
-  if (!target.findFamily(kind)) {
-    return op->emitError() << "R1: unknown executor kind '" << kind << "'";
-  }
   if (!inst) {
-    return op->emitError() << "R1: executor '" << kind << "#" << index
-                           << "' out of range";
+    return op->emitError() << "R1: unknown executor '" << kind << "#" << index
+                           << "' (not declared in the target)";
   }
-
-  const ExecutorFamilyModel *fam = target.findFamily(kind);
 
   for (Value operand : op->getOperands()) {
     auto memrefType = dyn_cast<MemRefType>(operand.getType());
@@ -50,7 +45,7 @@ LogicalResult verifyOp(Operation *op, const TargetModel &target) {
 
     if (!spaceAttr) {
       // Host-side operand: reachable iff the resource is a DMA bridge.
-      if (!fam->dma) {
+      if (!inst->dma) {
         return op->emitError()
                << "R1: executor '" << kind
                << "' cannot access host memory (not a DMA bridge)";
@@ -59,14 +54,27 @@ LogicalResult verifyOp(Operation *op, const TargetModel &target) {
     }
 
     StringRef spaceName = spaceAttr.getName();
-    if (!target.findMemSpace(spaceName)) {
+    const SRAMConfig *space = target.findMemSpace(spaceName);
+    if (!space) {
       return op->emitError() << "R1: unknown memory space '" << spaceName
-                             << "' (not declared in the design)";
+                             << "' (not declared in the target)";
     }
-    if (!fam->canReach(spaceName)) {
+    if (!inst->canReach(spaceName)) {
       return op->emitError() << "R1: executor '" << kind
                              << "' cannot reach memory space '" << spaceName
                              << "'";
+    }
+
+    // Row-bounds check: the accessed [base_row, base_row + rows) window must
+    // fit inside the space's physical rows (banks x rowsPerBank). A window
+    // past the end would land on nonexistent banks.
+    int64_t endRow = spaceAttr.getBaseRow() + spaceAttr.getRows();
+    if (spaceAttr.getBaseRow() < 0 || spaceAttr.getRows() < 0 ||
+        endRow > space->totalRows()) {
+      return op->emitError()
+             << "R1: access [" << spaceAttr.getBaseRow() << ", " << endRow
+             << ") exceeds memory space '" << spaceName << "' (total rows = "
+             << space->totalRows() << ")";
     }
   }
 

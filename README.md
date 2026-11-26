@@ -26,6 +26,7 @@ Perfer replays and never schedules. instruction order, resource assignment, and 
 
 ## How it differs from other tools
 
+
 | Tool                          | Modeling granularity                | Input                                     | Typical use                                                  |
 | ----------------------------- | ----------------------------------- | ----------------------------------------- | ------------------------------------------------------------ |
 | Spike                         | functional                          | binary program                            | verifies results, no timing model                            |
@@ -66,24 +67,32 @@ Two caveats:
 
 ## Config and IR example
 
-The config is written in the DSE engineer's vocabulary—physical structure parameters such as port counts, memory geometry, and subsystem microarchitecture. The compiler–simulator contract (executor instances, internal links) is projected from these parameters rather than written by hand; `perf --dump-contract` prints it for inspection. See `test/fixtures/target.mlir` for a complete example.
+The hardware configuration is a single, flat simulator-level target: the
+memory spaces, executors, and links with their physical parameters. It is the
+only hardware vocabulary—there is no separate design/contract split. You can
+write it directly as `#perf.target` (see `test/acceptance/0_base/target.mlir`),
+or derive it from an architect-level `config.json` (a GUI-friendly graph of
+memory hierarchy / compute resources / interconnect) with
+`perf --config config.json --dump-target`.
 
 ```mlir
-// a minimal design point
-perf.target_def @systolic_npu_v1 #perf.design<
-  version = 5,
-  target_name = "systolic_npu_v1",
-  frequency_mhz = 1000,
-  memory_spaces = [
-    #perf.memspace<name = "spad", capacity_kib = 256, banks = 4, ...>,
-    #perf.memspace<name = "acc",  capacity_kib = 64,  banks = 4, ...>
+// a minimal target
+perf.target_def @systolic_npu_v1 #perf.target<
+  version = 5, ...,
+  memory_spaces = [ #perf.sram<...>, #perf.sram<...> ],
+  executors = [
+    #perf.executor<kind = "dma_read", ...>,
+    #perf.executor<kind = "dma_write", ...>,
+    #perf.executor<kind = "array", ...>
   ],
-  dma_read_ports = 1, dma_write_ports = 1, arrays = 1,
-  dma_channel = #perf.dma<bus_bytes_per_cycle = 16, ...>,
-  array_uarch = #perf.array<mesh_rows = 16, mesh_cols = 16, ...>,
-  share_dram_bus = true
+  links = [ #perf.link<kind = "dram_bus", ...> ]
 >
 ```
+
+How each resource is modelled—the demand type it accepts, the placement
+strategy, the arbiter, and the nominal cycle formula—is keyed off the
+executor/link `kind` and built into the simulator, not carried in the target.
+The target carries only the resource inventory and its physical parameters.
 
 The IR describes how the program executes: where buffers live, which DMA channel each transfer takes, which array computes, and who depends on whom.
 
@@ -107,18 +116,19 @@ There are no cycle numbers anywhere in the IR. Perfer derives each instruction's
 
 ## Simulation priors (optional)
 
-A design point alone is enough to simulate; the result is the raw structural timing reported as **uncalibrated**. Calibration corrections—produced by aligning the simulator against RTL ground truth (see [Accuracy targets and calibration](#accuracy-targets-and-calibration))—live in a separate prior file that is shared unchanged across all design points of a machine family. Passing `--prior` applies those corrections to the run; the load message states which mode the simulator is in, so a report always says whether it carries calibration backing. See `test/fixtures/prior.mlir` for an example.
+A design point alone is enough to simulate; the result is the raw structural timing reported as **uncalibrated**. Calibration corrections—produced by aligning the simulator against RTL ground truth (see [Accuracy targets and calibration](#accuracy-targets-and-calibration))—live in a separate prior file that is shared unchanged across all design points of a machine family. Passing `--prior` applies those corrections to the run; the load message states which mode the simulator is in, so a report always says whether it carries calibration backing. See `test/acceptance/1_contract/prior.mlir` for an example.
 
 ## Accuracy targets and calibration
 
 Gemmini is currently the only planned calibration target, with its RTL simulation (Verilator / VCS / FireSim) as ground truth. Results for other configurations are unverified and for reference only.
 
-| Level       | Scope                                                        | Error target                                                 | Status      |
-| ----------- | ------------------------------------------------------------ | ------------------------------------------------------------ | ----------- |
-| Simple ops  | matmul with one or a few tiles, straight-line IR             | ±3%                                                          | Not started |
-| Complex ops | multi-tile, double-buffered, software-pipelined matmul / conv | ±5%                                                          | Not started |
-| Networks    | end-to-end sequences of operator layers                      | mean and max error within ±10%, with covered layer types stated | Not started |
-| LLMs        | small to mainstream-scale LLMs                               | no absolute-error commitment; trend and ranking only         | Not started |
+
+| Level       | Scope                                                         | Error target                                                     | Status      |
+| ----------- | ------------------------------------------------------------- | ---------------------------------------------------------------- | ----------- |
+| Simple ops  | matmul with one or a few tiles, straight-line IR              | ±3%                                                             | Not started |
+| Complex ops | multi-tile, double-buffered, software-pipelined matmul / conv | ±5%                                                             | Not started |
+| Networks    | end-to-end sequences of operator layers                       | mean and max error within ±10%, with covered layer types stated | Not started |
+| LLMs        | small to mainstream-scale LLMs                                | no absolute-error commitment; trend and ranking only             | Not started |
 
 - Simple ops are the calibration anchor: golden tests align every op's start/end cycle by cycle, and the basic parameters (DMA latency, array_init, stream, fill/drain) are calibrated at this level.
 - Complex ops introduce stalls and overlap, mainly exercising cross-resource bubble modeling.
@@ -171,32 +181,34 @@ ctest --preset default
 # Only the standalone C++ component tests
 ctest --preset unit
 
-# Only the end-to-end fixture tests (verifier rules, contract projection)
+# Only the end-to-end fixture tests (verifier rules, target projection)
 ctest --preset acceptance
 ```
 
 ### Quick start
 
-Inspect the projected compiler–simulator contract for a design point:
+Inspect the simulator-level target projected from an architect-level
+config.json:
 
 ```bash
-./build/tools/perf/perf --input=test/fixtures/input.mlir \
-  --target=test/fixtures/target.mlir --dump-contract
-# module { perf.contract_def @systolic_npu_v1 ... }
+./build/tools/perf/perf --config=test/acceptance/1_contract/config.json \
+  --dump-target
+# module { perf.target_def @systolic_npu_v1 ... }
 ```
 
-Verify a Perf dialect program against a design point (uncalibrated by default, or with priors when calibration data exists):
+Verify a Perf dialect program against a target (uncalibrated by default, or with priors when calibration data exists):
 
 ```bash
-./build/tools/perf/perf --input=test/fixtures/input.mlir \
-  --target=test/fixtures/target.mlir
-# Loaded design: systolic_npu_v1 (uncalibrated)
-# OK: test/fixtures/input.mlir against test/fixtures/target.mlir
+./build/tools/perf/perf --input=test/acceptance/0_base/input.mlir \
+  --target=test/acceptance/0_base/target.mlir
+# Loaded target: systolic_npu_v1 (uncalibrated)
+# OK: test/acceptance/0_base/input.mlir against test/acceptance/0_base/target.mlir
 
-./build/tools/perf/perf --input=test/fixtures/input.mlir \
-  --target=test/fixtures/target.mlir --prior=test/fixtures/prior.mlir
-# Loaded design: systolic_npu_v1 with prior: systolic_npu_base
-# OK: test/fixtures/input.mlir against test/fixtures/target.mlir
+./build/tools/perf/perf --input=test/acceptance/0_base/input.mlir \
+  --target=test/acceptance/0_base/target.mlir \
+  --prior=test/acceptance/1_contract/prior.mlir
+# Loaded target: systolic_npu_v1 with prior: systolic_npu_base
+# OK: test/acceptance/0_base/input.mlir against test/acceptance/0_base/target.mlir
 ```
 
 ### VS Code integration

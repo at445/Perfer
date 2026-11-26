@@ -8,6 +8,7 @@
 #include "perf/Dialect/PerfDialect.h"
 #include "perf/Dialect/PerfOps.h"
 #include "perf/Sim/TargetModel.h"
+#include "perf/Sim/JsonConfig.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/AsmState.h"
@@ -30,11 +31,20 @@ using namespace mlir;
 
 static llvm::cl::opt<std::string> inputFilename(
     "input", llvm::cl::desc("Input MLIR program file"),
-    llvm::cl::value_desc("program.mlir"), llvm::cl::Required);
+    llvm::cl::value_desc("program.mlir"), llvm::cl::init(""));
 
 static llvm::cl::opt<std::string> targetFilename(
-    "target", llvm::cl::desc("Target design MLIR file (perf.target_def)"),
-    llvm::cl::value_desc("design.mlir"), llvm::cl::Required);
+    "target",
+    llvm::cl::desc("Simulator-level target MLIR file (perf.target_def), the "
+                   "executor/link vocabulary the simulator consumes directly"),
+    llvm::cl::value_desc("target.mlir"), llvm::cl::init(""));
+
+static llvm::cl::opt<std::string> configFilename(
+    "config",
+    llvm::cl::desc("Architect-level config JSON file (memory hierarchy / "
+                   "compute resources / interconnect graph). Projected to a "
+                   "target internally (equivalent to --dump-target + simulate)"),
+    llvm::cl::value_desc("config.json"), llvm::cl::init(""));
 
 static llvm::cl::opt<std::string> priorFilename(
     "prior",
@@ -46,9 +56,10 @@ static llvm::cl::opt<std::string> outputFilename(
     "o", llvm::cl::desc("Output filename ('-' for stdout)"),
     llvm::cl::value_desc("filename"), llvm::cl::init("-"));
 
-static llvm::cl::opt<bool> dumpContract(
-    "dump-contract",
-    llvm::cl::desc("Print the materialized compiler-simulator contract and exit"),
+static llvm::cl::opt<bool> dumpTarget(
+    "dump-target",
+    llvm::cl::desc("Project the config to the simulator-level target and "
+                   "print it, then exit"),
     llvm::cl::init(false));
 
 //===----------------------------------------------------------------------===//
@@ -109,20 +120,34 @@ static llvm::FailureOr<OpTy> findSingleTopLevel(ModuleOp mod,
   return result;
 }
 
-static llvm::FailureOr<perf::TargetModel> loadConfig(
-    llvm::StringRef designFile, llvm::StringRef priorFile,
+// Resolve the TargetAttr from exactly one of --config (architect-level JSON)
+// or --target (simulator-level MLIR perf.target_def).
+static llvm::FailureOr<perf::TargetAttr> resolveTargetAttr(
+    llvm::StringRef configFile, llvm::StringRef targetFile,
     MLIRContext &context) {
-  auto designMod = parseModuleFile(designFile, context);
-  if (!designMod)
+  if (configFile.empty() == targetFile.empty()) {
+    llvm::errs() << "error: exactly one of --config or --target is required\n";
     return failure();
-  auto targetDef = findSingleTopLevel<perf::TargetDefOp>(*designMod,
-                                                         designFile);
+  }
+
+  if (!configFile.empty())
+    return perf::targetAttrFromJsonConfig(configFile, context);
+
+  auto targetMod = parseModuleFile(targetFile, context);
+  if (!targetMod)
+    return failure();
+  auto targetDef = findSingleTopLevel<perf::TargetDefOp>(*targetMod,
+                                                         targetFile);
   if (failed(targetDef))
     return failure();
+  return targetDef->getConfig();
+}
 
-  perf::DesignAttr design = targetDef->getConfig();
-
-  perf::PriorAttr prior;
+// Resolve the simulation prior, defaulting to the identity (uncalibrated)
+// prior when --prior is omitted.
+static llvm::FailureOr<perf::PriorAttr> resolvePrior(
+    llvm::StringRef priorFile, perf::TargetAttr target,
+    MLIRContext &context) {
   if (priorFile.empty()) {
     // Identity prior: zero calibration corrections. "No calibration data"
     // and "zero corrections" are the same thing physically; modelling it
@@ -131,28 +156,17 @@ static llvm::FailureOr<perf::TargetModel> loadConfig(
         &context, /*extra_fill_cycles=*/0, /*extra_drain_cycles=*/0,
         /*extra_preload_cycles=*/0, /*extra_writeback_cycles=*/0,
         /*host_issue_cycles=*/0);
-    prior = perf::PriorAttr::get(&context, design.getVersion(),
-                                 "identity", zeroCalibration);
-  } else {
-    auto priorMod = parseModuleFile(priorFile, context);
-    if (!priorMod)
-      return failure();
-    auto priorDef = findSingleTopLevel<perf::PriorDefOp>(*priorMod,
-                                                         priorFile);
-    if (failed(priorDef))
-      return failure();
-    prior = priorDef->getConfig();
+    return perf::PriorAttr::get(&context, target.getVersion(),
+                                "identity", zeroCalibration);
   }
-
-  auto modelOr = perf::TargetModel::build(design, prior);
-  if (failed(modelOr)) {
-    llvm::errs() << "error: failed to build TargetModel from " << designFile
-                 << (priorFile.empty() ? " (identity prior)"
-                                       : " + " + priorFile)
-                 << "\n";
+  auto priorMod = parseModuleFile(priorFile, context);
+  if (!priorMod)
     return failure();
-  }
-  return modelOr;
+  auto priorDef = findSingleTopLevel<perf::PriorDefOp>(*priorMod,
+                                                       priorFile);
+  if (failed(priorDef))
+    return failure();
+  return priorDef->getConfig();
 }
 
 //===----------------------------------------------------------------------===//
@@ -169,24 +183,49 @@ int main(int argc, char **argv) {
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  // Load design + prior configs
-  auto targetOr = loadConfig(targetFilename, priorFilename, context);
-  if (failed(targetOr))
+  // Resolve the simulator-level target from --config / --target.
+  auto targetAttrOr = resolveTargetAttr(configFilename, targetFilename,
+                                        context);
+  if (failed(targetAttrOr))
     return 1;
-  auto target = std::move(*targetOr);
+  auto targetAttr = *targetAttrOr;
 
-  llvm::outs() << "Loaded design: " << target.getDesignAttr().getTargetName();
+  // --dump-target: print the resolved target as a perf.target_def and exit.
+  // This is a pure projection (config.json -> target.mlir); no TargetModel
+  // is built. A malformed target surfaces later through the verifier rules.
+  if (dumpTarget) {
+    auto mod = mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+    mlir::OpBuilder builder(&context);
+    builder.setInsertionPointToStart(mod.getBody());
+    perf::TargetDefOp::create(builder, builder.getUnknownLoc(),
+                              targetAttr.getTargetName(), targetAttr);
+    mod->print(llvm::outs());
+    llvm::outs() << "\n";
+    return 0;
+  }
+
+  // Simulation path: build the TargetModel (one-way, target -> model).
+  auto priorOr = resolvePrior(priorFilename, targetAttr, context);
+  if (failed(priorOr))
+    return 1;
+  auto prior = *priorOr;
+
+  auto modelOr = perf::TargetModel::build(targetAttr, prior);
+  if (failed(modelOr))
+    return 1;
+  auto target = std::move(*modelOr);
+
+  llvm::outs() << "Loaded target: " << targetAttr.getTargetName();
   if (priorFilename.empty())
     llvm::outs() << " (uncalibrated)\n";
   else
     llvm::outs() << " with prior: "
                  << target.getPriorAttr().getTargetName() << "\n";
 
-  if (dumpContract) {
-    auto contractMod = target.materializeContract(context);
-    contractMod->print(llvm::outs());
-    llvm::outs() << "\n";
-    return 0;
+  // Simulation needs the program IR.
+  if (inputFilename.empty()) {
+    llvm::errs() << "error: --input is required unless --dump-target is given\n";
+    return 1;
   }
 
   // Parse program
@@ -214,6 +253,9 @@ int main(int argc, char **argv) {
   if (failed(perf::verifyArrayState(*mod)))
     return 1;
 
-  llvm::outs() << "OK: " << inputFilename << " against " << targetFilename << "\n";
+  llvm::StringRef cfg = configFilename.empty()
+                            ? llvm::StringRef(targetFilename)
+                            : llvm::StringRef(configFilename);
+  llvm::outs() << "OK: " << inputFilename << " against " << cfg << "\n";
   return 0;
 }

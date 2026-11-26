@@ -96,4 +96,15 @@ module {
     } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 0, 32>>, !perf.token) -> !perf.token
     return
   }
+
+  // Boundary: a window ending exactly at the space's last row is legal.
+  // spad total rows = 16384; [16352, 16352+32) = 16384, the top edge.
+  func.func @boundary_last_row(%A: memref<512xi8>, %B: memref<512xi8, #perf.space<"spad", 16352, 32>>) {
+    %t = perf.token.init
+    %l = perf.dma_load %A, %B [%t] {
+      bytes = 512,
+      resource = #perf.res<"dma_read", 0>
+    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 16352, 32>>, !perf.token) -> !perf.token
+    return
+  }
 }

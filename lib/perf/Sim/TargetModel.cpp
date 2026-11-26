@@ -5,11 +5,9 @@
 #include "perf/Dialect/PerfOps.h"
 
 #include "mlir/IR/Attributes.h"
-#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -20,12 +18,13 @@ using namespace perf;
 // DmaConfig
 //===----------------------------------------------------------------------===//
 
-int64_t DmaConfig::transferCycles(int64_t bytes) const {
-  return divideCeil(bytes, busBytesPerCycle);
+int64_t DmaConfig::transferCycles(int64_t bytes,
+                                  int64_t bytesPerCycle) const {
+  return divideCeil(bytes, bytesPerCycle);
 }
 
-int64_t DmaConfig::totalLatency(int64_t bytes) const {
-  return fixedLatencyCycles + transferCycles(bytes);
+int64_t DmaConfig::totalLatency(int64_t bytes, int64_t bytesPerCycle) const {
+  return fixedLatencyCycles + transferCycles(bytes, bytesPerCycle);
 }
 
 //===----------------------------------------------------------------------===//
@@ -44,7 +43,7 @@ std::string ExecutorInstance::name() const {
   return kind + "#" + std::to_string(index);
 }
 
-bool ExecutorFamilyModel::canReach(StringRef space) const {
+bool ExecutorInstance::canReach(StringRef space) const {
   return llvm::is_contained(spaces, space);
 }
 
@@ -56,15 +55,12 @@ std::string LinkInstance::name() const {
 // TargetModel
 //===----------------------------------------------------------------------===//
 
-//===----------------------------------------------------------------------===//
-// TargetModel
-//===----------------------------------------------------------------------===//
-
 namespace {
 
 DmaConfig toDmaConfig(perf::DmaAttr a) {
   return {
-      .busBytesPerCycle = a.getBusBytesPerCycle(),
+      .readPorts = a.getReadPorts(),
+      .writePorts = a.getWritePorts(),
       .fixedLatencyCycles = a.getFixedLatencyCycles(),
       .maxOutstanding = a.getMaxOutstanding(),
       .burstBytes = a.getBurstBytes(),
@@ -81,27 +77,29 @@ ArrayConfig toArrayConfig(perf::ArrayAttr a) {
       .peLatencyCycles = a.getPeLatencyCycles(),
       .inputSkew = a.getInputSkew(),
       .interTilePipelined = a.getInterTilePipelined(),
+      .accReadScaleCycles = a.getAccReadScaleCycles(),
+      .accReadActCycles = a.getAccReadActCycles(),
   };
 }
 
 } // namespace
 
-FailureOr<TargetModel> TargetModel::build(perf::DesignAttr design,
+FailureOr<TargetModel> TargetModel::build(perf::TargetAttr target,
                                           perf::PriorAttr prior) {
-  TargetModel model(design, prior);
+  TargetModel model(target, prior);
 
-  // Named memory spaces: the IDs that program-side #perf.space<name, ...>
-  // attributes resolve against.
+  // ── memory spaces ────────────────────────────────────────────────────
+  // The IDs that program-side #perf.space<name, ...> attributes resolve
+  // against. The `banks` / `interleave` geometry is kept as-is; the
+  // simulator derives per-bank contention ports from it at demand time.
   llvm::SmallDenseSet<llvm::StringRef> seenSpaces;
-  llvm::SmallVector<std::string> allSpaces;
-  for (mlir::Attribute a : design.getMemorySpaces()) {
+  for (mlir::Attribute a : target.getMemorySpaces()) {
     auto ms = cast<perf::MemSpaceAttr>(a);
     if (!seenSpaces.insert(ms.getName()).second) {
       llvm::errs() << "error: duplicate memory space name '" << ms.getName()
-                   << "' in design '" << design.getTargetName() << "'\n";
+                   << "' in target '" << target.getTargetName() << "'\n";
       return failure();
     }
-    allSpaces.push_back(ms.getName().str());
     model.memSpaces_.push_back({
         .name = ms.getName().str(),
         .capacityKib = ms.getCapacityKib(),
@@ -110,82 +108,68 @@ FailureOr<TargetModel> TargetModel::build(perf::DesignAttr design,
         .writePorts = ms.getWritePorts(),
         .portWidthBytes = ms.getPortWidthBytes(),
         .rowWidthBytes = ms.getRowWidthBytes(),
+        .interleave = ms.getInterleave().str(),
     });
   }
 
-  // Project the physical design parameters into the compiler-simulator
-  // contract. Every executor reaches every declared memory space (R1
-  // connectivity); finer-grained topology belongs to a later milestone.
-  auto addFamily = [&](llvm::StringRef kind, int64_t count,
-                       std::optional<DmaConfig> dma,
-                       std::optional<ArrayConfig> array) {
-    if (count <= 0)
-      return;
-    ExecutorFamilyModel fm;
-    fm.kind = kind.str();
-    fm.count = count;
-    fm.inOrder = true;  // executors are in-order resources (default order)
-    fm.spaces = allSpaces;
-    fm.dma = std::move(dma);
-    fm.arrayConfig = std::move(array);
-
-    int64_t familyIndex = static_cast<int64_t>(model.families_.size());
-    model.families_.push_back(std::move(fm));
-    for (int64_t i = 0; i < count; ++i) {
-      model.executors_.push_back({
-          .kind = kind.str(),
+  // ── links ────────────────────────────────────────────────────────────
+  // dram_bus channels are the bandwidth source for DMA transfer nominal;
+  // their per-channel bandwidth is looked up directly from the link list.
+  for (mlir::Attribute a : target.getLinks()) {
+    auto link = cast<perf::LinkAttr>(a);
+    for (int64_t i = 0; i < link.getCount(); ++i) {
+      model.links_.push_back({
+          .kind = link.getKind().str(),
           .index = i,
-          .inOrder = true,
-          .familyIndex = familyIndex,
+          .bytesPerCycle = link.getBytesPerCycle(),
       });
     }
-  };
+  }
 
-  auto dmaCfg = toDmaConfig(design.getDmaChannel());
-  addFamily("dma_read", design.getDmaReadPorts(), dmaCfg, std::nullopt);
-  addFamily("dma_write", design.getDmaWritePorts(), dmaCfg, std::nullopt);
-  addFamily("array", design.getArrays(), std::nullopt,
-            toArrayConfig(design.getArrayUarch()));
+  // ── executors ────────────────────────────────────────────────────────
+  // Each executor family expands into `count` instances, each carrying its
+  // own kind / index / ordering / reachable spaces and engine config.
+  for (mlir::Attribute a : target.getExecutors()) {
+    auto famAttr = cast<perf::ExecutorFamilyAttr>(a);
 
-  if (design.getShareDramBus())
-    model.links_.push_back({.kind = "dram_bus", .index = 0});
+    std::optional<DmaConfig> dma;
+    std::optional<ArrayConfig> array;
+    mlir::Attribute config = famAttr.getConfig();
+    if (auto d = dyn_cast<perf::DmaAttr>(config))
+      dma = toDmaConfig(d);
+    else if (auto ar = dyn_cast<perf::ArrayAttr>(config))
+      array = toArrayConfig(ar);
+    else {
+      llvm::errs() << "error: executor kind '" << famAttr.getKind()
+                   << "' carries an unsupported config type in target '"
+                   << target.getTargetName() << "'\n";
+      return failure();
+    }
+
+    llvm::SmallVector<std::string> spaces;
+    for (mlir::Attribute s : famAttr.getSpaces())
+      spaces.push_back(cast<mlir::StringAttr>(s).getValue().str());
+
+    for (int64_t i = 0; i < famAttr.getCount(); ++i) {
+      ExecutorInstance inst;
+      inst.kind = famAttr.getKind().str();
+      inst.index = i;
+      inst.spaces = spaces;
+      inst.dma = dma;
+      inst.arrayConfig = array;
+      model.executors_.push_back(std::move(inst));
+    }
+  }
 
   return model;
 }
 
-const MemSpaceConfig *TargetModel::findMemSpace(StringRef name) const {
+const SRAMConfig *TargetModel::findMemSpace(StringRef name) const {
   for (const auto &ms : memSpaces_) {
     if (ms.name == name)
       return &ms;
   }
   return nullptr;
-}
-
-const ExecutorFamilyModel *TargetModel::findFamily(StringRef kind) const {
-  for (const auto &fam : families_) {
-    if (fam.kind == kind)
-      return &fam;
-  }
-  return nullptr;
-}
-
-const DmaConfig *TargetModel::dmaConfig(StringRef kind) const {
-  const auto *fam = findFamily(kind);
-  if (!fam || !fam->dma)
-    return nullptr;
-  return &*fam->dma;
-}
-
-const ArrayConfig *TargetModel::arrayConfig(StringRef kind) const {
-  const auto *fam = findFamily(kind);
-  if (!fam || !fam->arrayConfig)
-    return nullptr;
-  return &*fam->arrayConfig;
-}
-
-bool TargetModel::executorCanReach(StringRef kind, StringRef space) const {
-  const auto *fam = findFamily(kind);
-  return fam && fam->canReach(space);
 }
 
 const ExecutorInstance *TargetModel::findExecutor(StringRef kind,
@@ -213,61 +197,31 @@ const LinkInstance *TargetModel::findLink(StringRef kind, int64_t index) const {
   return nullptr;
 }
 
-//===----------------------------------------------------------------------===//
-// Contract materialization
-//===----------------------------------------------------------------------===//
-
-mlir::OwningOpRef<mlir::ModuleOp>
-TargetModel::materializeContract(mlir::MLIRContext &context) const {
-  auto loc = mlir::UnknownLoc::get(&context);
-  auto module = mlir::ModuleOp::create(loc);
-  mlir::OpBuilder builder(&context);
-  builder.setInsertionPointToStart(module.getBody());
-
-  // Group link instances back into (kind, count) families for emission.
-  llvm::SmallVector<mlir::Attribute> linkAttrs;
-  {
-    llvm::StringMap<int64_t> linkCounts;
-    llvm::SmallVector<std::string> linkOrder;
-    for (const auto &l : links_) {
-      if (linkCounts[l.kind]++ == 0)
-        linkOrder.push_back(l.kind);
-    }
-    for (const auto &kind : linkOrder) {
-      linkAttrs.push_back(perf::LinkAttr::get(
-          &context, kind, linkCounts[kind]));
-    }
+const DmaConfig *TargetModel::dmaConfig(StringRef kind) const {
+  for (const auto &inst : executors_) {
+    if (inst.kind == kind && inst.dma)
+      return &*inst.dma;
   }
+  return nullptr;
+}
 
-  // Executor families: one #perf.executor_family per family, reusing the
-  // original microarchitecture attributes from the design.
-  llvm::SmallVector<mlir::Attribute> execAttrs;
-  for (const auto &fam : families_) {
-    mlir::Attribute config;
-    if (fam.dma)
-      config = designAttr_.getDmaChannel();
-    else
-      config = designAttr_.getArrayUarch();
-
-    llvm::SmallVector<mlir::Attribute> spaces;
-    for (const auto &s : fam.spaces)
-      spaces.push_back(builder.getStringAttr(s));
-
-    execAttrs.push_back(perf::ExecutorFamilyAttr::get(
-        &context, fam.kind, fam.count, fam.inOrder,
-        builder.getArrayAttr(spaces), config));
+const ArrayConfig *TargetModel::arrayConfig(StringRef kind) const {
+  for (const auto &inst : executors_) {
+    if (inst.kind == kind && inst.arrayConfig)
+      return &*inst.arrayConfig;
   }
+  return nullptr;
+}
 
-  auto contractAttr = perf::ContractAttr::get(
-      &context,
-      designAttr_.getVersion(),
-      designAttr_.getTargetName(),
-      designAttr_.getFrequencyMhz(),
-      designAttr_.getMemorySpaces(),
-      builder.getArrayAttr(execAttrs),
-      builder.getArrayAttr(linkAttrs));
+int64_t TargetModel::dramBytesPerCycle() const {
+  const auto *link = findLink("dram_bus", 0);
+  return link ? link->bytesPerCycle : 0;
+}
 
-  builder.create<perf::ContractDefOp>(loc, designAttr_.getTargetName(),
-                                      contractAttr);
-  return module;
+bool TargetModel::executorCanReach(StringRef kind, StringRef space) const {
+  for (const auto &inst : executors_) {
+    if (inst.kind == kind)
+      return inst.canReach(space);
+  }
+  return false;
 }

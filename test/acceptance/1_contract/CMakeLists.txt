@@ -1,15 +1,16 @@
 # ---------------------------------------------------------------------------
-# Contract projection (--dump-contract): the projected compiler-simulator
-# contract must contain the complete executor/link vocabulary of the design.
-# expected.mlir documents the full expected output for reference.
+# Target projection (--dump-target): config.json (the architect-level graph of
+# memory hierarchy / compute resources / interconnect) is projected into the
+# simulator-level executor/link vocabulary the simulator consumes directly.
+# expected.mlir documents the full expected --dump-target output.
 # ---------------------------------------------------------------------------
 
 add_test(
-  NAME contract_dump
-  COMMAND perf --input=${CMAKE_CURRENT_SOURCE_DIR}/../0_base/input.mlir
-               --target=${CMAKE_CURRENT_SOURCE_DIR}/target.mlir
-               --dump-contract
+  NAME dump_target
+  COMMAND perf --config=${CMAKE_CURRENT_SOURCE_DIR}/config.json
+               --dump-target
 )
-set_tests_properties(contract_dump PROPERTIES
+set_tests_properties(dump_target PROPERTIES
   PASS_REGULAR_EXPRESSION
-    "perf.contract_def @systolic_npu_v1.*executor_family<kind = \"dma_read\".*executor_family<kind = \"dma_write\".*executor_family<kind = \"array\".*link<kind = \"dram_bus\"")
+    "perf.target_def @systolic_npu_v1.*executor<kind = \"array\".*executor<kind = \"dma_read\".*executor<kind = \"dma_write\".*link<kind = \"dram_bus\".*bytes_per_cycle = 16"
+)
