@@ -25,10 +25,12 @@ module {
     memory_spaces = [
       #perf.sram<name = "spad", capacity_kib = 256, banks = 4,
                      read_ports = 4, write_ports = 4,
-                     port_width_bytes = 16, row_width_bytes = 16>,
+                     port_width_bytes = 16, row_width_bytes = 16,
+                     interleave = "low">,
       #perf.sram<name = "acc", capacity_kib = 64, banks = 4,
                      read_ports = 1, write_ports = 1,
-                     port_width_bytes = 64, row_width_bytes = 64>
+                     port_width_bytes = 64, row_width_bytes = 64,
+                     interleave = "low">
     ],
     executors = [
       // The array config carries the acc read-out epilogue (scale + ReLU).
