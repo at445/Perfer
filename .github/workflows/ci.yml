@@ -18,14 +18,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Restore the prebuilt LLVM/MLIR produced by llvm-cache.yml. The cache
-      # key is pinned to the LLVM version so a version bump rebuilds it.
+      # Restore the prebuilt LLVM/MLIR. On a cache miss (first run, or after
+      # bumping LLVM_VERSION) the steps below build it from source and the
+      # cache action stores the result for subsequent runs.
       - name: Restore prebuilt LLVM/MLIR
+        id: llvm-cache
         uses: actions/cache@v4
         with:
           path: ${{ env.LLVM_BUILD_DIR }}
           key: llvm-${{ env.LLVM_VERSION }}-${{ runner.os }}-release
-          fail-on-cache-miss: true
+
+      - name: Clone LLVM (pinned version)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LLVM_VERSION }} \
+            https://github.com/llvm/llvm-project.git llvm-project
+
+      - name: Build LLVM + MLIR (first run only)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          cmake -S llvm-project/llvm -B llvm-project/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS=mlir \
+            -DLLVM_TARGETS_TO_BUILD=X86 \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DCMAKE_INSTALL_PREFIX=${{ env.LLVM_BUILD_DIR }}
+          cmake --build llvm-project/build -j"$(nproc)" --target install
 
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build lcov
