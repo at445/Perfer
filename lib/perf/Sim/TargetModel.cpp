@@ -164,57 +164,58 @@ FailureOr<TargetModel> TargetModel::build(perf::TargetAttr target,
   return model;
 }
 
-const SRAMConfig *TargetModel::findMemSpace(StringRef name) const {
+OptCRef<SRAMConfig> TargetModel::findMemSpace(StringRef name) const {
   for (const auto &ms : memSpaces_) {
     if (ms.name == name)
-      return &ms;
+      return std::cref(ms);
   }
-  return nullptr;
+  return std::nullopt;
 }
 
-const ExecutorInstance *TargetModel::findExecutor(StringRef kind,
-                                                  int64_t index) const {
+OptCRef<ExecutorInstance> TargetModel::findExecutor(StringRef kind,
+                                                    int64_t index) const {
   for (const auto &inst : executors_) {
     if (inst.kind == kind && inst.index == index)
-      return &inst;
+      return std::cref(inst);
   }
-  return nullptr;
+  return std::nullopt;
 }
 
-const ExecutorInstance *TargetModel::findExecutor(StringRef name) const {
+OptCRef<ExecutorInstance> TargetModel::findExecutor(StringRef name) const {
   for (const auto &inst : executors_) {
     if (inst.name() == name)
-      return &inst;
+      return std::cref(inst);
   }
-  return nullptr;
+  return std::nullopt;
 }
 
-const LinkInstance *TargetModel::findLink(StringRef kind, int64_t index) const {
+OptCRef<LinkInstance> TargetModel::findLink(StringRef kind,
+                                            int64_t index) const {
   for (const auto &inst : links_) {
     if (inst.kind == kind && inst.index == index)
-      return &inst;
+      return std::cref(inst);
   }
-  return nullptr;
+  return std::nullopt;
 }
 
-const DmaConfig *TargetModel::dmaConfig(StringRef kind) const {
+OptCRef<DmaConfig> TargetModel::dmaConfig(StringRef kind) const {
   for (const auto &inst : executors_) {
     if (inst.kind == kind && inst.dma)
-      return &*inst.dma;
+      return std::cref(*inst.dma);
   }
-  return nullptr;
+  return std::nullopt;
 }
 
-const ArrayConfig *TargetModel::arrayConfig(StringRef kind) const {
+OptCRef<ArrayConfig> TargetModel::arrayConfig(StringRef kind) const {
   for (const auto &inst : executors_) {
     if (inst.kind == kind && inst.arrayConfig)
-      return &*inst.arrayConfig;
+      return std::cref(*inst.arrayConfig);
   }
-  return nullptr;
+  return std::nullopt;
 }
 
 int64_t TargetModel::dramBytesPerCycle() const {
-  const auto *link = findLink("dram_bus", 0);
+  const auto link = findLink("dram_bus", 0);
   return link ? link->bytesPerCycle : 0;
 }
 

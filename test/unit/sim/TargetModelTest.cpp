@@ -127,8 +127,8 @@ TEST_F(TargetModelTest, BuildFromAttr) {
   // Named memory spaces.
   ASSERT_EQ(model.memSpaces().size(), 2u);
 
-  const auto *spad = model.findMemSpace("spad");
-  ASSERT_NE(spad, nullptr);
+  const auto spad = model.findMemSpace("spad");
+  ASSERT_TRUE(spad.has_value());
   EXPECT_EQ(spad->capacityKib, 256);
   EXPECT_EQ(spad->capacityBytes(), 256 * 1024);
   EXPECT_EQ(spad->banks, 4);
@@ -136,14 +136,14 @@ TEST_F(TargetModelTest, BuildFromAttr) {
   // 256 KiB / (4 banks * 16 B/row) = 4096 rows per bank.
   EXPECT_EQ(spad->rowsPerBank(), 4096);
 
-  const auto *acc = model.findMemSpace("acc");
-  ASSERT_NE(acc, nullptr);
+  const auto acc = model.findMemSpace("acc");
+  ASSERT_TRUE(acc.has_value());
   EXPECT_EQ(acc->capacityKib, 64);
   EXPECT_EQ(acc->rowWidthBytes, 64);
   // 64 KiB / (4 banks * 64 B/row) = 256 rows per bank.
   EXPECT_EQ(acc->rowsPerBank(), 256);
 
-  EXPECT_EQ(model.findMemSpace("nonexistent"), nullptr);
+  EXPECT_FALSE(model.findMemSpace("nonexistent").has_value());
 
   // Executor instances (expanded from the executor entries).
   EXPECT_EQ(model.executors().size(), 3u);
@@ -163,23 +163,23 @@ TEST_F(TargetModelTest, PerFamilyConfig) {
 
   // DMA instances carry their engine-intrinsic config (bandwidth lives on
   // the dram_bus link, not the engine).
-  const auto *readDma = model.dmaConfig("dma_read");
-  ASSERT_NE(readDma, nullptr);
+  const auto readDma = model.dmaConfig("dma_read");
+  ASSERT_TRUE(readDma.has_value());
   EXPECT_EQ(readDma->fixedLatencyCycles, 20);
   EXPECT_EQ(readDma->maxOutstanding, 8);
   EXPECT_EQ(readDma->burstBytes, 64);
 
-  const auto *writeDma = model.dmaConfig("dma_write");
-  ASSERT_NE(writeDma, nullptr);
+  const auto writeDma = model.dmaConfig("dma_write");
+  ASSERT_TRUE(writeDma.has_value());
 
-  // Wrong config type queries return nullptr.
-  EXPECT_EQ(model.dmaConfig("array"), nullptr);
-  EXPECT_EQ(model.arrayConfig("dma_read"), nullptr);
-  EXPECT_EQ(model.dmaConfig("nonexistent"), nullptr);
+  // Wrong config type queries return std::nullopt.
+  EXPECT_FALSE(model.dmaConfig("array").has_value());
+  EXPECT_FALSE(model.arrayConfig("dma_read").has_value());
+  EXPECT_FALSE(model.dmaConfig("nonexistent").has_value());
 
   // Array config, including the acc read-out epilogue fields.
-  const auto *array = model.arrayConfig("array");
-  ASSERT_NE(array, nullptr);
+  const auto array = model.arrayConfig("array");
+  ASSERT_TRUE(array.has_value());
   EXPECT_EQ(array->topology, "systolic");
   EXPECT_EQ(array->meshRows, 16);
   EXPECT_EQ(array->meshCols, 16);
@@ -204,9 +204,9 @@ TEST_F(TargetModelTest, ExecutorConnectivity) {
   EXPECT_FALSE(model.executorCanReach("nonexistent", "spad"));
 
   // Links are internal: no connectivity, not findable as executors.
-  const auto *dramBus = model.findLink("dram_bus", 0);
-  ASSERT_NE(dramBus, nullptr);
-  EXPECT_EQ(model.findExecutor("dram_bus", 0), nullptr);
+  const auto dramBus = model.findLink("dram_bus", 0);
+  ASSERT_TRUE(dramBus.has_value());
+  EXPECT_FALSE(model.findExecutor("dram_bus", 0).has_value());
 }
 
 TEST_F(TargetModelTest, DmaDerivedMethods) {
@@ -278,22 +278,22 @@ module attributes {perf.target = #perf.target<
   EXPECT_EQ(model.executors()[2].name(), "array#0");
   EXPECT_EQ(model.executors()[5].name(), "array#3");
 
-  auto *inst = model.findExecutor("dma_read", 1);
-  ASSERT_NE(inst, nullptr);
+  auto inst = model.findExecutor("dma_read", 1);
+  ASSERT_TRUE(inst.has_value());
   EXPECT_EQ(inst->name(), "dma_read#1");
 
   inst = model.findExecutor("array#3");
-  ASSERT_NE(inst, nullptr);
+  ASSERT_TRUE(inst.has_value());
   EXPECT_EQ(inst->kind, "array");
   EXPECT_EQ(inst->index, 3);
 
   // Array instances carry their own array config.
-  const auto *arrayCfg = model.arrayConfig("array");
-  ASSERT_NE(arrayCfg, nullptr);
+  const auto arrayCfg = model.arrayConfig("array");
+  ASSERT_TRUE(arrayCfg.has_value());
   EXPECT_EQ(arrayCfg->numArrayInstances(), 4);
 
-  EXPECT_EQ(model.findExecutor("nonexistent", 0), nullptr);
-  EXPECT_EQ(model.findExecutor("dma_read#99"), nullptr);
+  EXPECT_FALSE(model.findExecutor("nonexistent", 0).has_value());
+  EXPECT_FALSE(model.findExecutor("dma_read#99").has_value());
 }
 
 TEST_F(TargetModelTest, RejectsDuplicateSpaceNames) {

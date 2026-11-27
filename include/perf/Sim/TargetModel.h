@@ -4,6 +4,7 @@
 #define PERF_SIM_TARGETMODEL_H
 
 #include "perf/Dialect/PerfAttrs.h"
+#include "perf/Support/OptRef.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -118,20 +119,21 @@ public:
   perf::PriorAttr getPriorAttr() const { return priorAttr_; }
 
   llvm::ArrayRef<SRAMConfig> memSpaces() const { return memSpaces_; }
-  const SRAMConfig *findMemSpace(llvm::StringRef name) const;
+  OptCRef<SRAMConfig> findMemSpace(llvm::StringRef name) const;
 
   llvm::ArrayRef<ExecutorInstance> executors() const { return executors_; }
   llvm::ArrayRef<LinkInstance> links() const { return links_; }
 
-  const ExecutorInstance *findExecutor(llvm::StringRef kind,
-                                       int64_t index) const;
-  const ExecutorInstance *findExecutor(llvm::StringRef name) const;
-  const LinkInstance *findLink(llvm::StringRef kind, int64_t index) const;
+  OptCRef<ExecutorInstance> findExecutor(llvm::StringRef kind,
+                                         int64_t index) const;
+  OptCRef<ExecutorInstance> findExecutor(llvm::StringRef name) const;
+  OptCRef<LinkInstance> findLink(llvm::StringRef kind, int64_t index) const;
 
-  // Config lookup by executor kind (returns nullptr when the kind is absent
-  // or carries a different config type). Finds the first instance of kind.
-  const DmaConfig *dmaConfig(llvm::StringRef kind) const;
-  const ArrayConfig *arrayConfig(llvm::StringRef kind) const;
+  // Config lookup by executor kind (returns std::nullopt when the kind is
+  // absent or carries a different config type). Finds the first instance of
+  // kind.
+  OptCRef<DmaConfig> dmaConfig(llvm::StringRef kind) const;
+  OptCRef<ArrayConfig> arrayConfig(llvm::StringRef kind) const;
 
   // Per-channel bandwidth of the shared dram_bus channel the DMA ports
   // contend on (the source of DMA transfer nominal). 0 when absent.

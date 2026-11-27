@@ -29,7 +29,7 @@ LogicalResult verifyOp(Operation *op, const TargetModel &target) {
   // The placement must reference an executor instance that exists in the
   // target. Links are not executors, so they are rejected here by
   // construction.
-  const ExecutorInstance *inst = target.findExecutor(kind, index);
+  const auto inst = target.findExecutor(kind, index);
   if (!inst) {
     return op->emitError() << "R1: unknown executor '" << kind << "#" << index
                            << "' (not declared in the target)";
@@ -54,7 +54,7 @@ LogicalResult verifyOp(Operation *op, const TargetModel &target) {
     }
 
     StringRef spaceName = spaceAttr.getName();
-    const SRAMConfig *space = target.findMemSpace(spaceName);
+    const auto space = target.findMemSpace(spaceName);
     if (!space) {
       return op->emitError() << "R1: unknown memory space '" << spaceName
                              << "' (not declared in the target)";
