@@ -1,11 +1,11 @@
 name: CI
 
-# Pull requests and pushes to main: build the project and run the full
-# test suite (unit + acceptance) with coverage.
+# Pull requests (any target) and pushes to main/develop: build the project
+# and run the full test suite (unit + acceptance) with coverage.
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, develop]
 
 env:
   LLVM_VERSION: llvmorg-22.1.8
