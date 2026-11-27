@@ -1,4 +1,9 @@
-// ExecutionViewTest.cpp - Unit tests for the simulator's index layer.
+// ExecutionViewTest.cpp - Unit tests for the simulator's op-view layer
+// (ExecutionView / DependencyGraph / ScheduleView).
+//
+// Programs under test are fixtures: data/<feature>/input/program.mlir.
+// The views have no serialized form (yet), so assertions are on the C++
+// structures they build from those programs.
 
 #include "perf/Sim/ExecutionView.h"
 #include "perf/Sim/DependencyGraph.h"
@@ -13,76 +18,64 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/Support/MemoryBuffer.h"
+
 #include "gtest/gtest.h"
 
 using namespace mlir;
 using namespace perf;
 
-// A small program exercising all four executor ops with a token chain.
-static constexpr const char *kProgram = R"mlir(
-module {
-  func.func @main(%A: memref<512xi8>, %B: memref<512xi8>, %C: memref<256xi32>,
-                  %SA: memref<512xi8, #perf.space<"spad", 0, 32>>,
-                  %SB: memref<512xi8, #perf.space<"spad", 32, 32>>,
-                  %ACC: memref<256xi32, #perf.space<"acc", 0, 16>>) {
-    %free = perf.token.init
+namespace {
 
-    %la = perf.dma_load %A, %SA [%free] {
-      bytes = 512,
-      resource = #perf.res<"dma_read", 0>
-    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 0, 32>>, !perf.token) -> !perf.token
+// Fixture root: data/<feature>/input/program.mlir.
+const std::string kDataDir = PERF_UNIT_TEST_DATA_DIR;
 
-    %lb = perf.dma_load %B, %SB [%free] {
-      bytes = 512,
-      resource = #perf.res<"dma_read", 0>
-    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 32, 32>>, !perf.token) -> !perf.token
-
-    %i0 = perf.array_init {
-      m = 16, n = 16,
-      resource = #perf.res<"array", 0>
-    } : () -> !perf.token
-
-    %c0 = perf.compute %SA, %SB, %ACC [%la, %lb, %i0] {
-      m = 16, n = 16, k = 32,
-      writeback = true,
-      resource = #perf.res<"array", 0>
-    } : (memref<512xi8, #perf.space<"spad", 0, 32>>,
-         memref<512xi8, #perf.space<"spad", 32, 32>>,
-         memref<256xi32, #perf.space<"acc", 0, 16>>,
-         !perf.token, !perf.token, !perf.token) -> !perf.token
-
-    %st = perf.dma_store %ACC, %C [%c0] {
-      bytes = 1024,
-      resource = #perf.res<"dma_write", 0>
-    } : (memref<256xi32, #perf.space<"acc", 0, 16>>, memref<256xi32>, !perf.token) -> !perf.token
-
-    perf.fence [%st]
-    return
-  }
+std::string programPath(llvm::StringRef feature) {
+  return kDataDir + "/" + feature.str() + "/input/program.mlir";
 }
-)mlir";
 
-class SimIndexTest : public ::testing::Test {
+class SimViewTest : public ::testing::Test {
 protected:
   void SetUp() override {
     context.loadDialect<PerfDialect>();
     context.loadDialect<func::FuncDialect>();
     context.loadDialect<memref::MemRefDialect>();
-    module = parseSourceString<ModuleOp>(kProgram, &context);
+  }
+
+  // Parse a feature's input program; null ref when unreadable/invalid.
+  OwningOpRef<ModuleOp> parseProgram(llvm::StringRef feature) {
+    auto bufferOr = llvm::MemoryBuffer::getFile(programPath(feature));
+    if (!bufferOr)
+      return nullptr;
+    return parseSourceString<ModuleOp>((*bufferOr)->getBuffer(), &context);
+  }
+
+  MLIRContext context;
+};
+
+// The default fixture: the token_chain program and its ExecutionView,
+// shared by the ExecutionView / DependencyGraph / default ScheduleView
+// tests.
+class TokenChainTest : public SimViewTest {
+protected:
+  void SetUp() override {
+    SimViewTest::SetUp();
+    module = parseProgram("token_chain");
     ASSERT_TRUE(module);
     view = ExecutionView::build(*module);
   }
 
-  MLIRContext context;
   OwningOpRef<ModuleOp> module;
   ExecutionView view;
 };
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // ExecutionView
 //===----------------------------------------------------------------------===//
 
-TEST_F(SimIndexTest, IndexesAllExecutorOpsInProgramOrder) {
+TEST_F(TokenChainTest, IndexesAllExecutorOpsInProgramOrder) {
   ASSERT_EQ(view.ops().size(), 5u); // la, lb, i0, c0, st
 
   // Ops are in block program order; ids are dense and stable.
@@ -92,7 +85,7 @@ TEST_F(SimIndexTest, IndexesAllExecutorOpsInProgramOrder) {
   }
 }
 
-TEST_F(SimIndexTest, PlacementParsedFromResourceAttr) {
+TEST_F(TokenChainTest, PlacementParsedFromResourceAttr) {
   EXPECT_EQ(view.placementOf(view.opOf(0)), ResourceId("dma_read", 0));
   EXPECT_EQ(view.placementOf(view.opOf(1)), ResourceId("dma_read", 0));
   EXPECT_EQ(view.placementOf(view.opOf(2)), ResourceId("array", 0));
@@ -100,7 +93,7 @@ TEST_F(SimIndexTest, PlacementParsedFromResourceAttr) {
   EXPECT_EQ(view.placementOf(view.opOf(4)), ResourceId("dma_write", 0));
 }
 
-TEST_F(SimIndexTest, TokenProducerCoversExecutorResults) {
+TEST_F(TokenChainTest, TokenProducerCoversExecutorResults) {
   const auto &prod = view.tokenProducer();
   // Each executor op's result token maps back to itself.
   for (Operation *op : view.ops())
@@ -113,7 +106,7 @@ TEST_F(SimIndexTest, TokenProducerCoversExecutorResults) {
 // DependencyGraph
 //===----------------------------------------------------------------------===//
 
-TEST_F(SimIndexTest, TokenEdgesFormExpectedGraph) {
+TEST_F(TokenChainTest, TokenEdgesFormExpectedGraph) {
   auto deps = DependencyGraph::build(view);
 
   // la(0) and lb(1) and i0(2) are sources; c0(3) depends on all three;
@@ -130,7 +123,7 @@ TEST_F(SimIndexTest, TokenEdgesFormExpectedGraph) {
   EXPECT_EQ(deps.successors(3).size(), 1u); // c0 -> st
 }
 
-TEST_F(SimIndexTest, ReadyTracksDoneMarks) {
+TEST_F(TokenChainTest, ReadyTracksDoneMarks) {
   auto deps = DependencyGraph::build(view);
 
   EXPECT_TRUE(deps.readyByDeps(0));
@@ -155,7 +148,7 @@ TEST_F(SimIndexTest, ReadyTracksDoneMarks) {
 // ScheduleView
 //===----------------------------------------------------------------------===//
 
-TEST_F(SimIndexTest, DefaultOrderIsProgramOrderPerResource) {
+TEST_F(TokenChainTest, DefaultOrderIsProgramOrderPerResource) {
   auto sched = ScheduleView::build(view);
 
   // dma_read#0: la(0) then lb(1) (program order).
@@ -182,28 +175,12 @@ TEST_F(SimIndexTest, DefaultOrderIsProgramOrderPerResource) {
   EXPECT_TRUE(sched.isExhausted({"nope", 0}));
 }
 
-TEST_F(SimIndexTest, ExplicitOrderAnnotationOverridesProgramOrder) {
-  const char *text = R"mlir(
-module {
-  func.func @t(%A: memref<512xi8>, %B: memref<512xi8>,
-               %SA: memref<512xi8, #perf.space<"spad", 0, 32>>,
-               %SB: memref<512xi8, #perf.space<"spad", 32, 32>>) {
-    %free = perf.token.init
-    %la = perf.dma_load %A, %SA [%free] {
-      bytes = 512, resource = #perf.res<"dma_read", 0>, order = 2
-    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 0, 32>>, !perf.token) -> !perf.token
-    %lb = perf.dma_load %B, %SB [%free] {
-      bytes = 512, resource = #perf.res<"dma_read", 0>, order = 1
-    } : (memref<512xi8>, memref<512xi8, #perf.space<"spad", 32, 32>>, !perf.token) -> !perf.token
-    return
-  }
-}
-)mlir";
-
-  auto mod2 = parseSourceString<ModuleOp>(text, &context);
-  ASSERT_TRUE(mod2);
-  auto view2 = ExecutionView::build(*mod2);
-  auto sched = ScheduleView::build(view2);
+// Explicit order annotations invert program order; uses its own fixture.
+TEST_F(SimViewTest, ExplicitOrderAnnotationOverridesProgramOrder) {
+  auto mod = parseProgram("explicit_order");
+  ASSERT_TRUE(mod);
+  auto view = ExecutionView::build(*mod);
+  auto sched = ScheduleView::build(view);
 
   // Both ops annotated: order=1 (lb, id 1) precedes order=2 (la, id 0).
   ResourceId dmaRead{"dma_read", 0};

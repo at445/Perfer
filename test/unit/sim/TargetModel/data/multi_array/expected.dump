@@ -1,0 +1,26 @@
+target "multi_array" v4 @ 1000 MHz
+memory_spaces:
+  spad: capacity=256 KiB, banks=4, ports=4r/4w, port_width=16 B, row_width=16 B, interleave=low
+  acc: capacity=64 KiB, banks=4, ports=1r/1w, port_width=64 B, row_width=64 B, interleave=low
+links:
+  dram_bus#0: bytes_per_cycle=16
+  dram_bus#1: bytes_per_cycle=16
+executors:
+  array#0
+    spaces: [spad, acc]
+    array: topology=systolic, mesh=16x16, tile=2x2, pe_latency=1, input_skew=true, inter_tile_pipelined=true, acc_read_scale=2, acc_read_act=1
+  array#1
+    spaces: [spad, acc]
+    array: topology=systolic, mesh=16x16, tile=2x2, pe_latency=1, input_skew=true, inter_tile_pipelined=true, acc_read_scale=2, acc_read_act=1
+  dma_read#0
+    spaces: [spad, acc]
+    dma: read_ports=2, write_ports=0, fixed_latency=20, max_outstanding=8, burst=64 B
+  dma_read#1
+    spaces: [spad, acc]
+    dma: read_ports=2, write_ports=0, fixed_latency=20, max_outstanding=8, burst=64 B
+  dma_write#0
+    spaces: [spad, acc]
+    dma: read_ports=0, write_ports=2, fixed_latency=20, max_outstanding=8, burst=64 B
+  dma_write#1
+    spaces: [spad, acc]
+    dma: read_ports=0, write_ports=2, fixed_latency=20, max_outstanding=8, burst=64 B

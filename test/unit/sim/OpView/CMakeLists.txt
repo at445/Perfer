@@ -10,3 +10,8 @@ target_link_libraries(ExecutionViewTest PRIVATE
   MLIRMemRefDialect
   MLIRFuncDialect
 )
+
+# Fixture root: data/<feature>/input/program.mlir.
+target_compile_definitions(ExecutionViewTest PRIVATE
+  PERF_UNIT_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)

@@ -11,6 +11,7 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
 #include <optional>
@@ -141,6 +142,13 @@ public:
 
   // R1 connectivity: does executor kind reach the given memory space?
   bool executorCanReach(llvm::StringRef kind, llvm::StringRef space) const;
+
+  // Print a stable, human-readable snapshot of the model (header, memory
+  // spaces, links, executors with their configs). Two models built from
+  // equivalent configs — e.g. a config.json and the target.mlir it lowers
+  // to — produce identical dumps.
+  void dump(llvm::raw_ostream &os) const;
+  void dump() const { dump(llvm::outs()); }
 
 private:
   explicit TargetModel(perf::TargetAttr target, perf::PriorAttr prior)

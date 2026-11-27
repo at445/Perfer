@@ -226,3 +226,53 @@ bool TargetModel::executorCanReach(StringRef kind, StringRef space) const {
   }
   return false;
 }
+
+//===----------------------------------------------------------------------===//
+// dump
+//===----------------------------------------------------------------------===//
+
+void TargetModel::dump(llvm::raw_ostream &os) const {
+  os << "target \"" << targetAttr_.getTargetName() << "\" v"
+     << targetAttr_.getVersion() << " @ " << targetAttr_.getFrequencyMhz()
+     << " MHz\n";
+
+  os << "memory_spaces:\n";
+  for (const auto &ms : memSpaces_) {
+    os << "  " << ms.name << ": capacity=" << ms.capacityKib << " KiB, banks="
+       << ms.banks << ", ports=" << ms.readPorts << "r/" << ms.writePorts
+       << "w, port_width=" << ms.portWidthBytes
+       << " B, row_width=" << ms.rowWidthBytes
+       << " B, interleave=" << ms.interleave << "\n";
+  }
+
+  os << "links:\n";
+  for (const auto &l : links_) {
+    os << "  " << l.name() << ": bytes_per_cycle=" << l.bytesPerCycle << "\n";
+  }
+
+  os << "executors:\n";
+  for (const auto &e : executors_) {
+    os << "  " << e.name() << "\n";
+    os << "    spaces: [";
+    llvm::interleaveComma(e.spaces, os);
+    os << "]\n";
+    if (e.dma) {
+      const auto &d = *e.dma;
+      os << "    dma: read_ports=" << d.readPorts
+         << ", write_ports=" << d.writePorts
+         << ", fixed_latency=" << d.fixedLatencyCycles
+         << ", max_outstanding=" << d.maxOutstanding
+         << ", burst=" << d.burstBytes << " B\n";
+    } else if (e.arrayConfig) {
+      const auto &a = *e.arrayConfig;
+      os << "    array: topology=" << a.topology << ", mesh=" << a.meshRows
+         << "x" << a.meshCols << ", tile=" << a.tileRows << "x" << a.tileCols
+         << ", pe_latency=" << a.peLatencyCycles
+         << ", input_skew=" << (a.inputSkew ? "true" : "false")
+         << ", inter_tile_pipelined="
+         << (a.interTilePipelined ? "true" : "false")
+         << ", acc_read_scale=" << a.accReadScaleCycles
+         << ", acc_read_act=" << a.accReadActCycles << "\n";
+    }
+  }
+}
