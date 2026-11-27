@@ -4,6 +4,14 @@ project(perf-simulator LANGUAGES CXX C)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Coverage instrumentation for the CI coverage job (gcov). Off by default so
+# local/release builds stay clean.
+option(PERF_ENABLE_COVERAGE "Build with gcov coverage instrumentation" OFF)
+if(PERF_ENABLE_COVERAGE)
+  add_compile_options(--coverage -O0 -g)
+  add_link_options(--coverage)
+endif()
+
 # ---------------------------------------------------------------------------
 # LLVM/MLIR discovery
 # Priority:

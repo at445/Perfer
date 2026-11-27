@@ -1,0 +1,59 @@
+name: CI
+
+# Pull requests and pushes to main: build the project and run the full
+# test suite (unit + acceptance) with coverage.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  LLVM_VERSION: llvmorg-22.1.8
+  # Directory the prebuilt LLVM/MLIR is unpacked into (see llvm-cache.yml).
+  LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-install
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Restore the prebuilt LLVM/MLIR produced by llvm-cache.yml. The cache
+      # key is pinned to the LLVM version so a version bump rebuilds it.
+      - name: Restore prebuilt LLVM/MLIR
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LLVM_BUILD_DIR }}
+          key: llvm-${{ env.LLVM_VERSION }}-${{ runner.os }}-release
+          fail-on-cache-miss: true
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build lcov
+
+      - name: Configure (coverage)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DLLVM_BUILD_DIR=${{ env.LLVM_BUILD_DIR }} \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPERF_ENABLE_COVERAGE=ON
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run unit + acceptance tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Collect coverage
+        run: |
+          lcov --capture --directory build \
+               --output-file coverage.info \
+               --include '*/lib/perf/*' \
+               --exclude '*/test/*'
+          lcov --list coverage.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.info
+          flags: lib
+          fail_ci_if_error: false

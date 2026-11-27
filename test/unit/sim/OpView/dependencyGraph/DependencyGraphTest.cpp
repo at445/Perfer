@@ -31,14 +31,14 @@ protected:
 TEST_F(DependencyGraphTest, TokenEdgesFormExpectedGraph) {
   auto deps = DependencyGraph::build(view);
 
-  // la(0) and lb(1) and i0(2) are sources; c0(3) depends on all three;
-  // st(4) depends on c0.
-  EXPECT_TRUE(deps.predecessors(0).empty());
-  EXPECT_TRUE(deps.predecessors(1).empty());
-  EXPECT_TRUE(deps.predecessors(2).empty());
+  // Program order ids: la(0) lb(1) i0(2) c0(3) st(4).
+  // Edges: la -> c0, lb -> c0, i0 -> c0, c0 -> st.
+  EXPECT_TRUE(deps.predecessors(0).empty()); // la:  source
+  EXPECT_TRUE(deps.predecessors(1).empty()); // lb:  source
+  EXPECT_TRUE(deps.predecessors(2).empty()); // i0:  source
 
-  ASSERT_EQ(deps.predecessors(3).size(), 3u);
-  EXPECT_EQ(deps.predecessors(4).size(), 1u);
+  ASSERT_EQ(deps.predecessors(3).size(), 3u); // c0 <- {la, lb, i0}
+  EXPECT_EQ(deps.predecessors(4).size(), 1u); // st <- c0
   EXPECT_EQ(deps.predecessors(4)[0], 3u);
 
   EXPECT_EQ(deps.successors(0).size(), 1u); // la -> c0

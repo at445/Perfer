@@ -1,5 +1,8 @@
 # Perfer
 
+[![CI](https://github.com/at445/Perfer/actions/workflows/ci.yml/badge.svg)](https://github.com/at445/Perfer/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/at445/Perfer/graph/badge.svg)](https://codecov.io/gh/at445/Perfer)
+
 Perfer is a discrete-event, instruction-level performance simulator built on MLIR, which could be used on the development of  AI Compier and DSE porcess. It reads a compiler-produced execution plan (Perf dialect IR) plus a hardware configuration, replays each instruction against the cost model derived from that configuration—when it starts, when it finishes, which resources it occupies—and reports total cycles, resource timelines, stall attribution, and the critical path.
 
 ```mermaid
