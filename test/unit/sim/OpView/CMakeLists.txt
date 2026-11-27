@@ -1,17 +1,8 @@
-add_perf_unittest(ExecutionViewTest
-  ExecutionViewTest.cpp
-)
-
-target_link_libraries(ExecutionViewTest PRIVATE
-  MLIRPerfSim
-  MLIRPerfDialect
-  MLIRParser
-  MLIRIR
-  MLIRMemRefDialect
-  MLIRFuncDialect
-)
-
-# Fixture root: data/<feature>/input/program.mlir.
-target_compile_definitions(ExecutionViewTest PRIVATE
-  PERF_UNIT_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
+# op-view UTs are split by component, each with its own fixtures under
+# data/<feature>/input/program.mlir:
+#   executionView/    the executor-op index (OpId, placement, token producers)
+#   dependencyGraph/  token dependency edges and readiness tracking
+#   scheduleView/     per-resource execution order
+add_subdirectory(executionView)
+add_subdirectory(dependencyGraph)
+add_subdirectory(scheduleView)

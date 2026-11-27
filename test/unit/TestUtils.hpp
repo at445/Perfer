@@ -20,6 +20,8 @@
 #include "perf/Sim/JsonConfig.h"
 #include "perf/Sim/TargetModel.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -142,6 +144,34 @@ protected:
     if (!target)
       return llvm::failure();
     return buildFromTargetAttr(target);
+  }
+};
+
+// Op-view test base: programs under test are fixtures at
+// data/<feature>/input/program.mlir. Loads the func/memref dialects the
+// executor ops' operands require.
+class SimViewTestBase : public PerfTestBase {
+protected:
+  void SetUp() override {
+    PerfTestBase::SetUp();
+    context.loadDialect<mlir::func::FuncDialect>();
+    context.loadDialect<mlir::memref::MemRefDialect>();
+  }
+
+  // PERF_UNIT_TEST_DATA_DIR names this test's data root via CMake.
+  const std::string dataDir = PERF_UNIT_TEST_DATA_DIR;
+
+  std::string programPath(llvm::StringRef feature) const {
+    return dataDir + "/" + feature.str() + "/input/program.mlir";
+  }
+
+  // Parse a feature's input program; null ref when unreadable/invalid.
+  mlir::OwningOpRef<mlir::ModuleOp> parseProgram(llvm::StringRef feature) {
+    auto bufferOr = llvm::MemoryBuffer::getFile(programPath(feature));
+    if (!bufferOr)
+      return nullptr;
+    return mlir::parseSourceString<mlir::ModuleOp>((*bufferOr)->getBuffer(),
+                                                   &context);
   }
 };
 
