@@ -63,6 +63,19 @@ include_directories(${PROJECT_BINARY_DIR}/include)
 
 add_definitions(${LLVM_DEFINITIONS})
 
+# googletest for the unit tests. Fetched here rather than taken from LLVM:
+# llvm_gtest is an internal build-tree-only target that an installed LLVM
+# (used by CI) does not ship. gtest needs RTTI/exceptions, which the rest of
+# the project compiles without, so build it in its own scope with them on.
+include(FetchContent)
+FetchContent_Declare(googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG v1.14.0
+  GIT_SHALLOW TRUE)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
 add_subdirectory(include/perf)
 add_subdirectory(lib)
 add_subdirectory(tools)
